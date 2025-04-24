@@ -57,6 +57,8 @@ def parse(opt_path, is_train=True):
         dataset['phase'] = phase
         dataset['scale'] = opt['scale']  # broadcast
         dataset['n_channels'] = opt['n_channels']  # broadcast
+        dataset['speed'] = opt['speed']  # broadcast
+        dataset['normalization'] = opt['normalization']  # broadcast
         if 'dataroot_H' in dataset and dataset['dataroot_H'] is not None:
             dataset['dataroot_H'] = os.path.expanduser(dataset['dataroot_H'])
         if 'dataroot_L' in dataset and dataset['dataroot_L'] is not None:
@@ -178,20 +180,36 @@ def find_last_checkpoint(save_dir, net_type='G', pretrained_path=None):
 
     Return:
         init_iter: iteration number
+        init_epoch: epoch number
         init_path: model path
     """
     file_list = glob.glob(os.path.join(save_dir, '*_{}.pth'.format(net_type)))
     if file_list:
         iter_exist = []
+        epoch_exist = []
         for file_ in file_list:
-            iter_current = re.findall(r"(\d+)_{}.pth".format(net_type), file_)
-            iter_exist.append(int(iter_current[0]))
-        init_iter = max(iter_exist)
-        init_path = os.path.join(save_dir, '{}_{}.pth'.format(init_iter, net_type))
+            # 修改正则表达式以匹配新的文件名格式
+            result = re.findall(r"(\d+)_(\d+)_{}.pth".format(net_type), file_)
+            if result:
+                epoch, iter_current = result[0]
+                epoch_exist.append(int(epoch))
+                iter_exist.append(int(iter_current))
+        
+        # 找到最新的检查点
+        if iter_exist:
+            init_iter = max(iter_exist)
+            init_epoch = max(epoch_exist)
+            init_path = os.path.join(save_dir, f'{init_epoch}_{init_iter}_{net_type}.pth')
+        else:
+            init_iter = 0
+            init_epoch = 0
+            init_path = pretrained_path
     else:
         init_iter = 0
+        init_epoch = 0
         init_path = pretrained_path
-    return init_iter, init_path
+        
+    return init_iter, init_epoch, init_path
 
 
 '''

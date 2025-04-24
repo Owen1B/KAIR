@@ -59,10 +59,10 @@ class ModelBase():
 
     def update_learning_rate(self, n):
         for scheduler in self.schedulers:
-            scheduler.step(n)
+            scheduler.step()
 
     def current_learning_rate(self):
-        return self.schedulers[0].get_lr()[0]
+        return self.schedulers[0].get_last_lr()[0]
 
     def requires_grad(self, model, flag=True):
         for p in model.parameters():
@@ -182,6 +182,18 @@ class ModelBase():
         save_filename = '{}_{}.pth'.format(iter_label, optimizer_label)
         save_path = os.path.join(save_dir, save_filename)
         torch.save(optimizer.state_dict(), save_path)
+
+    # ----------------------------------------
+    # save the best model
+    # ----------------------------------------
+    def save_best_model(self, network, network_label, name_suffix=''):
+        save_filename = f'best_{name_suffix}_{network_label}.pth'
+        save_path = os.path.join(self.save_dir, save_filename)
+        network = self.get_bare_model(network)
+        state_dict = network.state_dict()
+        for key, param in state_dict.items():
+            state_dict[key] = param.cpu()
+        torch.save(state_dict, save_path)
 
     # ----------------------------------------
     # load the state_dict of the optimizer

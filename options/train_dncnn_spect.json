@@ -1,0 +1,77 @@
+{
+  "task": "dncnn_spect_2x"  //  根目录/任务/图像-模型-选项
+  , "model": "plain" // "普通"
+  , "gpu_ids": [0]
+
+  , "scale": 1       // 如果是SISR则广播到"netG"
+  , "n_channels": 2  // 广播到"datasets"，1表示灰度，3表示彩色
+
+  , "norm_factor": 200        // 归一化因子
+  , "merge_bn": true               // DnCNN的批归一化
+  , "merge_bn_startpoint": 400000  // N次迭代后合并批归一化
+
+  , "path": {
+    "root": "denoising"            // "去噪" | "超分辨率"
+    , "pretrained_netG": null      // 预训练模型路径
+  }
+
+  , "datasets": {
+    "train": {
+      "name": "train_dataset"           // 仅作为名称
+      , "dataset_type": "spect"         // "dncnn" | "dnpatch"用于dncnn | "fdncnn" | "ffdnet" | "sr" | "srmd" | "dpsr" | "plain" | "plainpatch"
+      , "dataroot_H": "trainsets/spectH"// 训练数据集H路径
+      , "dataroot_L": null              // 训练数据集L路径
+      , "H_size": 64                    // 补丁大小 40 | 64 | 96 | 128 | 192
+      , "speed":4        // 快速扫描倍数
+      , "dataloader_shuffle": true
+      , "dataloader_num_workers": 8
+      , "dataloader_batch_size": 16     // 批大小 1 | 16 | 32 | 48 | 64 | 128
+    }
+    , "test": {
+      "name": "test_dataset"            // 仅作为名称
+      , "dataset_type": "spect"         // "dncnn" | "dnpatch"用于dncnn | "fdncnn" | "ffdnet" | "sr" | "srmd" | "dpsr" | "plain" | "plainpatch"
+      , "dataroot_H": "testsets/spectH"  // 测试数据集H路径
+      , "dataroot_L": null              // 测试数据集L路径
+      , "speed":4        // 快速扫描倍数
+    }
+  }
+
+  , "netG": {
+    "net_type": "dncnn" // "dncnn" | "fdncnn" | "ffdnet" | "srmd" | "dpsr" | "msrresnet0" | "msrresnet1" | "rrdb" 
+    , "in_nc": 2        // 输入通道数
+    , "out_nc": 2       // 输出通道数
+    , "nc": 64          // "dncnn"使用64
+    , "nb": 17          // "dncnn"使用17, dncnn3使用20, "srresnet"使用16
+    , "gc": 32          // 未使用
+    , "ng": 2           // 未使用
+    , "reduction" : 16  // 未使用
+    , "act_mode": "BR"  // "BR"表示BN+ReLU | "R"表示ReLU
+    , "upsample_mode": "convtranspose"  // "pixelshuffle" | "convtranspose" | "upconv"
+    , "downsample_mode": "strideconv"   // "strideconv" | "avgpool" | "maxpool"
+
+    , "init_type": "orthogonal"         // "正交" | "正态" | "均匀" | "xavier_normal" | "xavier_uniform" | "kaiming_normal" | "kaiming_uniform"
+    , "init_bn_type": "uniform"         // "均匀" | "常数"
+    , "init_gain": 0.2
+  }
+
+  , "train": {
+    "G_lossfn_type": "l1"               // 推荐使用"l1" | "l2sum" | "l2" | "ssim" 
+    , "G_lossfn_weight": 1.0            // 默认值
+
+    , "G_optimizer_type": "adam"        // 固定，adam已足够
+    , "G_optimizer_lr": 1e-4            // 学习率
+    , "G_optimizer_clipgrad": null      // 未使用
+
+    , "G_scheduler_type": "MultiStepLR" // "MultiStepLR"已足够
+    , "G_scheduler_milestones": [200000, 400000, 600000, 800000, 1000000, 2000000]
+    , "G_scheduler_gamma": 0.5
+
+    , "G_regularizer_orthstep": null    // 未使用
+    , "G_regularizer_clipstep": null    // 未使用
+
+    , "checkpoint_test": 1        // 用于测试
+    , "checkpoint_save": 200           // 用于保存模型
+    , "checkpoint_print": 200           // 用于打印
+    , "manual_seed": 20020113
+  }
+}

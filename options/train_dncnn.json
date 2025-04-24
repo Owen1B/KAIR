@@ -32,7 +32,7 @@
     , "test": {
       "name": "test_dataset"            // just name
       , "dataset_type": "dncnn"         // "dncnn" | "dnpatch" for dncnn,  | "fdncnn" | "ffdnet" | "sr" | "srmd" | "dpsr" | "plain" | "plainpatch"
-      , "dataroot_H": "testsets/bsd68"  // path of H testing dataset
+      , "dataroot_H": "testsets/set12"  // path of H testing dataset
       , "dataroot_L": null              // path of L testing dataset
 
       , "sigma": 25                     // 15, 25, 50 for DnCNN | [0, 75] for FFDNet and FDnCNN

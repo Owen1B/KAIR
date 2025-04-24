@@ -28,7 +28,11 @@ def define_Dataset(dataset_opt):
 
     elif dataset_type in ['fdncnn', 'denoising-noiselevelmap']:
         from data.dataset_fdncnn import DatasetFDnCNN as D
-
+        
+    elif dataset_type in ['spect']:
+        from data.dataset_spect import DatasetSPECT as D
+    elif dataset_type in ['spectpatch']:
+        from data.dataset_spectpatch import DatasetSPECTPatch as D
     # -----------------------------------------
     # super-resolution
     # -----------------------------------------

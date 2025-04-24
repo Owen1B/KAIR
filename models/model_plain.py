@@ -3,7 +3,11 @@ import torch
 import torch.nn as nn
 from torch.optim import lr_scheduler
 from torch.optim import Adam
-
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from utils import utils_image as util
+from utils import utils_spect
 from models.select_network import define_G
 from models.model_base import ModelBase
 from models.loss import CharbonnierLoss
@@ -75,12 +79,12 @@ class ModelPlain(ModelBase):
     # ----------------------------------------
     # save model / optimizer(optional)
     # ----------------------------------------
-    def save(self, iter_label):
-        self.save_network(self.save_dir, self.netG, 'G', iter_label)
+    def save(self, iter_label, epoch):
+        self.save_network(self.save_dir, self.netG, 'G', f"{epoch}_{iter_label}")
         if self.opt_train['E_decay'] > 0:
-            self.save_network(self.save_dir, self.netE, 'E', iter_label)
+            self.save_network(self.save_dir, self.netE, 'E', f"{epoch}_{iter_label}")
         if self.opt_train['G_optimizer_reuse']:
-            self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', iter_label)
+            self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', f"{epoch}_{iter_label}")
 
     # ----------------------------------------
     # define loss
@@ -271,3 +275,121 @@ class ModelPlain(ModelBase):
     def info_params(self):
         msg = self.describe_params(self.netG)
         return msg
+    
+    # ----------------------------------------
+    # evaluate metrics and generate visuals
+    # ----------------------------------------
+    def evaluate_metrics(self, test_loader, global_norm=True):
+        """评估模型性能,计算PSNR、SSIM、LPIPS指标,并生成可视化结果
+        Args:
+            test_loader: 测试数据加载器
+            global_norm: 是否使用全局归一化,默认True
+        Returns:
+            metrics_avg: 包含平均指标的字典
+            {
+                'psnr': float,
+                'ssim': float,
+                'lpips': float
+            }
+            visuals_list: 所有测试样本的可视化图像列表
+            image_names: 所有测试样本的文件名列表
+        """
+        self.netG.eval()
+        
+        # 初始化指标累加器
+        metrics_sum = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        
+        # 存储所有图像数据和文件名
+        all_imgs = {'L': [], 'E': [], 'H': []}
+        image_names = []
+        
+        # 设置返回路径信息
+        test_loader.dataset.return_paths = True
+        
+        # 遍历：收集所有图像数据
+        with torch.no_grad():
+            for test_data in test_loader:
+                self.feed_data(test_data)
+                self.test()
+                visuals = self.current_visuals()
+                
+                # 保存图像文件名
+                image_name_ext = os.path.basename(test_data['L_path'][0])
+                image_names.append(image_name_ext)
+                
+                # 将tensor转换为numpy并反归一化
+                for key in ['L', 'E', 'H']:
+                    img = visuals[key].cpu().float().numpy().transpose((1, 2, 0))
+                    
+                    # 反归一化处理
+                    img_norm = utils_spect.denormalize_spect(
+                                img, 
+                                self.opt['datasets']['test']['normalization']
+                            )
+                    all_imgs[key].append(img_norm)
+        
+        # 计算全局最大最小值
+        if global_norm:
+            all_values = np.concatenate([img.flatten() for key in ['H', 'L'] for img in all_imgs[key]])
+            min_val, max_val = np.min(all_values), np.max(all_values)
+        
+        # 计算每张图片的指标并生成可视化
+        count = 0
+        visuals_list = []
+        
+        for idx, imgs in enumerate(zip(*[all_imgs[k] for k in ['L', 'E', 'H']])):
+            L_img_norm, E_img_norm, H_img_norm = imgs
+            count += 1
+            
+            # 确定归一化范围
+            if not global_norm:
+                min_val = min(np.min(L_img_norm), np.min(H_img_norm))
+                max_val = max(np.max(L_img_norm), np.max(H_img_norm))
+            
+            # 归一化到[0,255]
+            imgs_255 = {}
+            for key, img in zip(['L', 'E', 'H'], [L_img_norm, E_img_norm, H_img_norm]):
+                imgs_255[key] = np.clip(((img - min_val) / (max_val - min_val) * 255), 0, 255).astype(np.uint8)
+            
+            # 计算指标
+            metrics_sum['psnr'] += util.calculate_psnr(imgs_255['E'], imgs_255['H'])
+            metrics_sum['ssim'] += util.calculate_ssim(imgs_255['E'], imgs_255['H'])
+            metrics_sum['lpips'] += util.calculate_lpips(imgs_255['E'], imgs_255['H'])
+            
+            # 为每个样本创建可视化图像
+            fig = plt.figure(figsize=(8, 20))
+            gs = plt.GridSpec(2, 4, height_ratios=[1, 1], width_ratios=[1, 1, 1, 0.05])
+            
+            titles = {
+                'L': 'Input (L)',
+                'E': 'Estimated (E)',
+                'H': 'Ground Truth (H)'
+            }
+            
+            # 绘制前位和后位图像
+            sample_imgs = {'L': L_img_norm, 'E': E_img_norm, 'H': H_img_norm}
+            for row, view in enumerate(['Anterior', 'Posterior']):
+                for col, (key, title) in enumerate(titles.items()):
+                    ax = plt.subplot(gs[row, col])
+                    im = ax.imshow(sample_imgs[key][:,:,row], cmap='gray', vmin=0, vmax=max(np.max(L_img_norm), np.max(H_img_norm)))
+                    ax.set_title(f'{title} - {view}')
+                    ax.axis('off')
+            
+            # 添加colorbar
+            cax = plt.subplot(gs[:, 3])
+            plt.colorbar(im, cax=cax)
+            
+            plt.tight_layout()
+            
+            # 将图像转换为数组
+            fig.canvas.draw()
+            img_array = np.array(fig.canvas.renderer.buffer_rgba())
+            visuals_list.append(img_array)
+            plt.close(fig)
+
+        
+        # 计算平均值
+        metrics_avg = {k: v/count for k, v in metrics_sum.items()}
+        
+        self.netG.train()
+        return metrics_avg, visuals_list, image_names

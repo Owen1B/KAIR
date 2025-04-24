@@ -85,15 +85,15 @@ class ModelGAN(ModelBase):
     # ----------------------------------------
     # save model / optimizer(optional)
     # ----------------------------------------
-    def save(self, iter_label):
-        self.save_network(self.save_dir, self.netG, 'G', iter_label)
-        self.save_network(self.save_dir, self.netD, 'D', iter_label)
+    def save(self, iter_label, epoch, name_suffix=''):
+        self.save_network(self.save_dir, self.netG, 'G', f"{epoch}_{iter_label}{name_suffix}")
+        self.save_network(self.save_dir, self.netD, 'D', f"{epoch}_{iter_label}{name_suffix}")
         if self.opt_train['E_decay'] > 0:
-            self.save_network(self.save_dir, self.netE, 'E', iter_label)
+            self.save_network(self.save_dir, self.netE, 'E', f"{epoch}_{iter_label}{name_suffix}")
         if self.opt_train['G_optimizer_reuse']:
-            self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', iter_label)
+            self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', f"{epoch}_{iter_label}{name_suffix}")
         if self.opt_train['D_optimizer_reuse']:
-            self.save_optimizer(self.save_dir, self.D_optimizer, 'optimizerD', iter_label)
+            self.save_optimizer(self.save_dir, self.D_optimizer, 'optimizerD', f"{epoch}_{iter_label}{name_suffix}")
 
     # ----------------------------------------
     # define loss

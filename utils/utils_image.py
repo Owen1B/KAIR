@@ -9,8 +9,11 @@ from datetime import datetime
 # import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+# 导入LPIPS模型
+from lpips import LPIPS
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
+import logging
+logging.getLogger('lpips').setLevel(logging.WARNING)  # 或者 logging.ERROR
 
 '''
 # --------------------------------------------
@@ -23,7 +26,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 '''
 
 
-IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP', '.tif']
+IMG_EXTENSIONS = ['.dat','.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP', '.tif']
 
 
 def is_image_file(filename):
@@ -665,6 +668,11 @@ def calculate_ssim(img1, img2, border=0):
             for i in range(3):
                 ssims.append(ssim(img1[:,:,i], img2[:,:,i]))
             return np.array(ssims).mean()
+        elif img1.shape[2] == 2:
+            ssims = []
+            for i in range(2):
+                ssims.append(ssim(img1[:,:,i], img2[:,:,i]))
+            return np.array(ssims).mean()
         elif img1.shape[2] == 1:
             return ssim(np.squeeze(img1), np.squeeze(img2))
     else:
@@ -774,6 +782,66 @@ def calculate_psnrb(img1, img2, border=0):
         total += 10 * torch.log10(1 / (mse + bef))
 
     return float(total) / img1.shape[1]
+
+# --------------------------------------------
+# LPIPS
+# --------------------------------------------
+def calculate_lpips(img1, img2, border=0):
+    """Calculate LPIPS (Learned Perceptual Image Patch Similarity).
+    Ref: https://github.com/richzhang/PerceptualSimilarity
+    Args:
+        img1 (ndarray): Images with range [0, 255].
+        img2 (ndarray): Images with range [0, 255].
+        border (int): 裁剪图像边缘的像素数。这些像素不参与LPIPS计算。
+    Returns:
+        float: lpips结果，值越小表示感知相似度越高。
+    """
+    if not img1.shape == img2.shape:
+        raise ValueError('输入图像必须具有相同的尺寸。')
+
+    if img1.ndim == 2:
+        img1, img2 = np.expand_dims(img1, 2), np.expand_dims(img2, 2)
+
+    h, w = img1.shape[:2]
+    img1 = img1[border:h-border, border:w-border]
+    img2 = img2[border:h-border, border:w-border]
+    
+    lpips_model = LPIPS(net='vgg',verbose=False).cuda()
+    
+    # 获取通道数
+    num_channels = img1.shape[2]
+    lpips_values = []
+    
+    # 对每个通道分别计算LPIPS
+    for c in range(num_channels):
+        # 获取当前通道的图像
+        img1_channel = img1[:,:,c]
+        img2_channel = img2[:,:,c]
+        
+        # 将图像转换为张量
+        img1_tensor = torch.from_numpy(img1_channel).unsqueeze(0).unsqueeze(0) / 255.
+        img2_tensor = torch.from_numpy(img2_channel).unsqueeze(0).unsqueeze(0) / 255.
+        
+        # 复制到3通道
+        img1_tensor = img1_tensor.expand(-1, 3, -1, -1)
+        img2_tensor = img2_tensor.expand(-1, 3, -1, -1)
+        
+        # 移动到GPU
+        img1_tensor = img1_tensor.cuda()
+        img2_tensor = img2_tensor.cuda()
+        
+        # 计算当前通道的LPIPS值
+        with torch.no_grad():
+            lpips_value = lpips_model(img1_tensor, img2_tensor).item()
+        
+        lpips_values.append(lpips_value)
+    
+    # 计算所有通道的平均LPIPS值
+    avg_lpips = sum(lpips_values) / len(lpips_values)
+    
+    return avg_lpips
+
+
 
 '''
 # --------------------------------------------
