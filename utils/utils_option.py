@@ -57,6 +57,8 @@ def parse(opt_path, is_train=True):
         dataset['phase'] = phase
         dataset['scale'] = opt['scale']  # broadcast
         dataset['n_channels'] = opt['n_channels']  # broadcast
+        dataset['speed'] = opt['speed']  # broadcast
+        dataset['normalization'] = opt['normalization']  # broadcast
         if 'dataroot_H' in dataset and dataset['dataroot_H'] is not None:
             dataset['dataroot_H'] = os.path.expanduser(dataset['dataroot_H'])
         if 'dataroot_L' in dataset and dataset['dataroot_L'] is not None:

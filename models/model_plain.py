@@ -43,6 +43,7 @@ class ModelPlain(ModelBase):
         self.define_optimizer()               # define optimizer
         self.load_optimizers()                # load optimizer
         self.define_scheduler()               # define scheduler
+        self.load_scheduler_states()          # load scheduler states
         self.log_dict = OrderedDict()         # log
 
     # ----------------------------------------
@@ -73,6 +74,15 @@ class ModelPlain(ModelBase):
             self.load_optimizer(load_path_optimizerG, self.G_optimizer)
 
     # ----------------------------------------
+    # load scheduler states
+    # ----------------------------------------
+    def load_scheduler_states(self):
+        load_path_schedulerG = self.opt['path'].get('pretrained_schedulerG') # Use .get for safety
+        if load_path_schedulerG is not None and self.schedulers:
+            print('Loading schedulerG [{:s}] ...'.format(load_path_schedulerG))
+            self.load_scheduler(load_path_schedulerG, self.schedulers[0])
+
+    # ----------------------------------------
     # save model / optimizer(optional)
     # ----------------------------------------
     def save(self, iter_label):
@@ -81,6 +91,8 @@ class ModelPlain(ModelBase):
             self.save_network(self.save_dir, self.netE, 'E', iter_label)
         if self.opt_train['G_optimizer_reuse']:
             self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', iter_label)
+        if self.schedulers: 
+            self.save_scheduler(self.save_dir, self.schedulers[0], 'schedulerG', iter_label)
 
     # ----------------------------------------
     # define loss

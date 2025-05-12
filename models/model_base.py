@@ -3,8 +3,12 @@ import torch
 import torch.nn as nn
 from utils.utils_bnorm import merge_bn, tidy_sequential
 from torch.nn.parallel import DataParallel, DistributedDataParallel
-
-
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from utils import utils_image as util
+from utils import utils_spect
+from pytorch_fid import fid_score
 class ModelBase():
     def __init__(self, opt):
         self.opt = opt                         # opt
@@ -59,10 +63,10 @@ class ModelBase():
 
     def update_learning_rate(self, n):
         for scheduler in self.schedulers:
-            scheduler.step(n)
+            scheduler.step()
 
     def current_learning_rate(self):
-        return self.schedulers[0].get_lr()[0]
+        return self.schedulers[0].get_last_lr()[0]
 
     def requires_grad(self, model, flag=True):
         for p in model.parameters():
@@ -156,6 +160,25 @@ class ModelBase():
         torch.save(state_dict, save_path)
 
     # ----------------------------------------
+    # save the state_dict of the best network
+    # ----------------------------------------
+    def save_best_network(self, network, network_label, name_suffix=''):
+        best_model_folder_name = 'bestmodel'
+        full_best_model_dir = os.path.join(self.save_dir, best_model_folder_name)
+        
+        # Ensure the directory exists
+        os.makedirs(full_best_model_dir, exist_ok=True)
+        
+        save_filename = f'best_{name_suffix}_{network_label}.pth'
+        save_path = os.path.join(full_best_model_dir, save_filename)
+
+        network = self.get_bare_model(network)
+        state_dict = network.state_dict()
+        for key, param in state_dict.items():
+            state_dict[key] = param.cpu()
+        torch.save(state_dict, save_path)
+
+    # ----------------------------------------
     # load the state_dict of the network
     # ----------------------------------------
     def load_network(self, load_path, network, strict=True, param_key='params'):
@@ -189,6 +212,21 @@ class ModelBase():
     def load_optimizer(self, load_path, optimizer):
         optimizer.load_state_dict(torch.load(load_path, map_location=lambda storage, loc: storage.cuda(torch.cuda.current_device())))
 
+    # ----------------------------------------
+    # save the state_dict of the scheduler
+    # ----------------------------------------
+    def save_scheduler(self, save_dir, scheduler, scheduler_label, iter_label):
+        save_filename = '{}_{}.pth'.format(iter_label, scheduler_label)
+        save_path = os.path.join(save_dir, save_filename)
+        torch.save(scheduler.state_dict(), save_path)
+
+    # ----------------------------------------
+    # load the state_dict of the scheduler
+    # ----------------------------------------
+    def load_scheduler(self, load_path, scheduler):
+        print(f"Loading scheduler state from {load_path}")
+        scheduler.load_state_dict(torch.load(load_path, map_location=lambda storage, loc: storage.cuda(torch.cuda.current_device())))
+
     def update_E(self, decay=0.999):
         netG = self.get_bare_model(self.netG)
         netG_params = dict(netG.named_parameters())
@@ -218,3 +256,185 @@ class ModelBase():
     def merge_bnorm_test(self):
         merge_bn(self.netG)
         tidy_sequential(self.netG)
+
+    # ----------------------------------------
+    # evaluate metrics and generate visuals
+    # ----------------------------------------
+    def evaluate_metrics(self, test_loader):
+        """评估模型性能,计算PSNR、SSIM、LPIPS指标,并保存可视化结果
+        Args:
+            test_loader: 测试数据加载器
+        Returns:
+            metrics_avg: 包含平均指标的字典
+            {
+                'psnr_global': float, 'ssim_global': float, 'lpips_global': float,
+                'psnr_local': float, 'ssim_local': float, 'lpips_local': float
+            }
+            visuals_list: 所有测试样本的可视化图像列表
+            image_names: 所有测试样本的文件名列表
+        """
+        self.netG.eval()
+        
+        # 初始化指标累加器
+        metrics_sum_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        metrics_sum_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        count = 0
+        
+        # 存储所有图像数据和文件名
+        all_imgs = {'L': [], 'E': [], 'H': []}
+        image_names = []
+        
+        # 创建保存目录 (图像保存逻辑不变, 仍基于全局归一化的视觉效果)
+        save_dir = os.path.join(self.opt['path']['images'])
+        for key in ['L', 'E', 'H']:
+            os.makedirs(os.path.join(save_dir, key), exist_ok=True)
+        
+        # 设置返回路径信息
+        test_loader.dataset.return_paths = True
+        
+        # 遍历：收集所有图像数据
+        with torch.no_grad():
+            for test_data in test_loader:
+                self.feed_data(test_data)
+                self.test()
+                visuals = self.current_visuals()
+                
+                image_name_ext = os.path.basename(test_data['L_path'][0])
+                image_name = os.path.splitext(image_name_ext)[0]
+                image_names.append(image_name)
+                
+                for key in ['L', 'E', 'H']:
+                    img = visuals[key].cpu().float().numpy().transpose((1, 2, 0))
+                    img_norm = utils_spect.denormalize_spect(
+                                img, 
+                                self.opt['datasets']['test']['normalization']
+                            )
+                    all_imgs[key].append(img_norm)
+        
+        # 计算全局最大最小值 (用于全局归一化指标和图像保存)
+        all_values_for_global_norm = np.concatenate([img.flatten() for key in ['H', 'L'] for img in all_imgs[key]])
+        min_val_global, max_val_global = np.min(all_values_for_global_norm), np.max(all_values_for_global_norm)
+        
+        # 计算每张图片的指标并生成可视化
+        visuals_list = []
+        
+        for idx, imgs_original_scale in enumerate(zip(*[all_imgs[k] for k in ['L', 'E', 'H']])):
+            L_img_norm, E_img_norm, H_img_norm = imgs_original_scale
+            count += 1
+            image_name = image_names[idx]
+            
+            # --- 全局归一化处理 (用于图像保存和全局指标) ---
+            imgs_255_global = {}
+            for key, img in zip(['L', 'E', 'H'], [L_img_norm, E_img_norm, H_img_norm]):
+                # 归一化到[0,255]
+                img_255 = np.clip(((img - min_val_global) / (max_val_global - min_val_global) * 255), 0, 255).astype(np.uint8)
+                imgs_255_global[key] = img_255
+                
+                # 保存每个通道为RGB图 (图像保存逻辑不变)
+                for ch in range(img.shape[2]):
+                    gray_img = img_255[:, :, ch]
+                    rgb_img = np.stack([gray_img, gray_img, gray_img], axis=2)
+                    rgb_path = os.path.join(save_dir, key, f"{image_name}_ch{ch}.png")
+                    util.imsave(rgb_img, rgb_path)
+            
+            # 从保存的图像中读取并计算全局指标
+            for ch in range(L_img_norm.shape[2]):
+                H_rgb_global_saved = util.imread_uint(os.path.join(save_dir, 'H', f"{image_name}_ch{ch}.png"), n_channels=3)
+                E_rgb_global_saved = util.imread_uint(os.path.join(save_dir, 'E', f"{image_name}_ch{ch}.png"), n_channels=3)
+                psnr_global = util.calculate_psnr(E_rgb_global_saved, H_rgb_global_saved)
+                ssim_global = util.calculate_ssim(E_rgb_global_saved, H_rgb_global_saved)
+                lpips_global = util.calculate_lpips(E_rgb_global_saved, H_rgb_global_saved)
+                metrics_sum_global['psnr'] += psnr_global
+                metrics_sum_global['ssim'] += ssim_global
+                metrics_sum_global['lpips'] += lpips_global
+
+            # --- 局部/自适应归一化处理 (仅用于局部指标计算) ---
+            min_val_local = min(np.min(L_img_norm), np.min(H_img_norm))
+            max_val_local = max(np.max(L_img_norm), np.max(H_img_norm))
+            
+            # 防止 max_val_local == min_val_local 导致除以零
+            if max_val_local == min_val_local:
+                # 如果范围为0，则PSNR为inf (如果图像相同) 或0 (如果不同但范围为0)，SSIM为1或0
+                # LPIPS可能仍能计算或给出特定值。为简单起见，如果范围为0，我们跳过该样本的局部指标计算
+                # 或可以赋予特定值，如PSNR=0, SSIM=0, LPIPS=1 (表示差异大)
+                # 这里选择跳过，但实践中可能需要更鲁棒的处理
+                pass # 或者将该通道的局部指标设为特定值，如0或nan
+            else:
+                for ch in range(L_img_norm.shape[2]):
+                    E_ch_local = np.clip(((E_img_norm[:,:,ch] - min_val_local) / (max_val_local - min_val_local) * 255), 0, 255).astype(np.uint8)
+                    H_ch_local = np.clip(((H_img_norm[:,:,ch] - min_val_local) / (max_val_local - min_val_local) * 255), 0, 255).astype(np.uint8)
+                    
+                    # 扩展为3通道RGB图像以供度量函数使用
+                    E_rgb_local = np.stack([E_ch_local, E_ch_local, E_ch_local], axis=2)
+                    H_rgb_local = np.stack([H_ch_local, H_ch_local, H_ch_local], axis=2)
+                    psnr_local = util.calculate_psnr(E_rgb_local, H_rgb_local)
+                    ssim_local = util.calculate_ssim(E_rgb_local, H_rgb_local)
+                    lpips_local = util.calculate_lpips(E_rgb_local, H_rgb_local)
+                    metrics_sum_local['psnr'] += psnr_local
+                    metrics_sum_local['ssim'] += ssim_local
+                    metrics_sum_local['lpips'] += lpips_local
+
+            # 为每个样本创建可视化图像 (基于全局归一化的图像)
+            fig = plt.figure(figsize=(8, 20))
+            gs = plt.GridSpec(2, 4, height_ratios=[1, 1], width_ratios=[1, 1, 1, 0.05])
+            
+            titles = {
+                'L': 'Input (L)',
+                'E': 'Estimated (E)',
+                'H': 'Ground Truth (H)'
+            }
+            
+            sample_imgs_for_vis = {'L': L_img_norm, 'E': E_img_norm, 'H': H_img_norm}
+            # 可视化时也使用全局的min/max进行一致的显示
+            vmax_vis = max(np.max(L_img_norm), np.max(H_img_norm))
+            vmin_vis = min(np.min(L_img_norm), np.min(H_img_norm))
+
+            
+            # 添加大标题显示PSNR和SSIM
+            plt.suptitle(f'PSNR: {psnr_local:.2f}dB, SSIM: {ssim_local:.4f}', fontsize=16)
+
+            for row, view in enumerate(['Anterior', 'Posterior']):
+                for col, (key, title) in enumerate(titles.items()):
+                    ax = plt.subplot(gs[row, col])
+                    # 使用imgs_255_global中的图像进行可视化，或者使用原始的L_img_norm等并指定全局的vmin, vmax
+                    # 这里我们使用原始图像配合全局的min_val_global, max_val_global进行显示，确保一致性
+                    im = ax.imshow(sample_imgs_for_vis[key][:,:,row], cmap='gray', vmin=vmin_vis, vmax=vmax_vis)
+                    ax.set_title(f'{title} - {view}')
+                    ax.axis('off')
+            
+            cax = plt.subplot(gs[:, 3])
+            plt.colorbar(im, cax=cax) # colorbar 应该对应imshow的im对象
+            
+            plt.tight_layout(rect=[0, 0, 1, 0.95])  # 为顶部标题留出空间
+            
+            fig.canvas.draw()
+            img_array = np.array(fig.canvas.renderer.buffer_rgba())
+            visuals_list.append(img_array)
+            plt.close(fig)
+        
+        # FID计算逻辑保持不变 (如果启用)
+        # # FID计算需要从文件夹路径计算
+        # fid_value = fid_score.calculate_fid_given_paths([os.path.join(save_dir, 'H'), os.path.join(save_dir, 'E')], 
+        #                                                 batch_size=50, device=self.device, dims=2048)
+        # metrics_sum['fid'] = fid_value # 需要决定fid是全局还是局部，或者独立
+        
+        # 计算平均值
+        total_channels = count * L_img_norm.shape[2] if count > 0 and L_img_norm.ndim == 3 else count # Handle cases where L_img_norm might not have channels dim if issues
+        if total_channels == 0: # Avoid division by zero if no valid data processed
+            metrics_avg = {
+                'psnr_global': 0, 'ssim_global': 0, 'lpips_global': 0,
+                'psnr_local': 0, 'ssim_local': 0, 'lpips_local': 0
+            }
+        else:
+            metrics_avg = {
+                'psnr_global': metrics_sum_global['psnr'] / total_channels,
+                'ssim_global': metrics_sum_global['ssim'] / total_channels,
+                'lpips_global': metrics_sum_global['lpips'] / total_channels,
+                'psnr_local': metrics_sum_local['psnr'] / total_channels,
+                'ssim_local': metrics_sum_local['ssim'] / total_channels,
+                'lpips_local': metrics_sum_local['lpips'] / total_channels,
+                # 'fid': metrics_sum['fid'] # FID已经是一个整体值
+            }
+        
+        self.netG.train()
+        return metrics_avg, visuals_list, image_names

@@ -9,6 +9,8 @@ from datetime import datetime
 # import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+# 导入LPIPS模型
+from lpips import LPIPS
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
@@ -23,7 +25,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 '''
 
 
-IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP', '.tif']
+IMG_EXTENSIONS = ['.dat','.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP', '.tif']
 
 
 def is_image_file(filename):
@@ -660,9 +662,9 @@ def calculate_ssim(img1, img2, border=0):
     if img1.ndim == 2:
         return ssim(img1, img2)
     elif img1.ndim == 3:
-        if img1.shape[2] == 3:
+        if img1.shape[2] in [2, 3]:
             ssims = []
-            for i in range(3):
+            for i in range(img1.shape[2]):
                 ssims.append(ssim(img1[:,:,i], img2[:,:,i]))
             return np.array(ssims).mean()
         elif img1.shape[2] == 1:
@@ -774,6 +776,47 @@ def calculate_psnrb(img1, img2, border=0):
         total += 10 * torch.log10(1 / (mse + bef))
 
     return float(total) / img1.shape[1]
+
+# --------------------------------------------
+# LPIPS
+# --------------------------------------------
+def calculate_lpips(img1, img2, border=0):
+    """计算LPIPS (Learned Perceptual Image Patch Similarity)。
+    Args:
+        img1 (ndarray): 输入图像，范围[0, 255]。
+        img2 (ndarray): 输入图像，范围[0, 255]。
+        border (int): 裁剪图像边缘的像素数。
+    Returns:
+        float: lpips结果，值越小表示感知相似度越高。
+    """
+    if not img1.shape == img2.shape:
+        raise ValueError('输入图像必须具有相同的尺寸。')
+
+    h, w = img1.shape[:2]
+    img1 = img1[border:h-border, border:w-border]
+    img2 = img2[border:h-border, border:w-border]
+    
+    lpips_model = LPIPS(net='vgg',verbose=False).cuda()
+    
+    # 将图像转换为[-1,1]范围
+    img1_tensor = torch.from_numpy(img1).float() / 127.5 - 1
+    img2_tensor = torch.from_numpy(img2).float() / 127.5 - 1
+    
+    # 调整维度顺序为[B,C,H,W]
+    img1_tensor = img1_tensor.permute(2, 0, 1).unsqueeze(0)
+    img2_tensor = img2_tensor.permute(2, 0, 1).unsqueeze(0)
+    
+    # 移动到GPU
+    img1_tensor = img1_tensor.cuda()
+    img2_tensor = img2_tensor.cuda()
+    
+    # 计算LPIPS值
+    with torch.no_grad():
+        lpips_value = lpips_model(img1_tensor, img2_tensor).item()
+    
+    return lpips_value
+
+
 
 '''
 # --------------------------------------------

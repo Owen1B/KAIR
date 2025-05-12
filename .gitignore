@@ -1,0 +1,44 @@
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# PyTorch模型文件
+*.pth
+*.pt
+*.bin
+*.ckpt
+model_state_dict/
+
+# 训练过程中生成的日志和结果
+logs/
+results/
+*.log
+
+# 数据集和中间文件
+*.npy
+*.npz
+*.h5
+*.pkl
+
+# 系统文件
+.DS_Store
+.vscode/
+.idea/
+
+# 数据集
+trainsets/
+testsets/
+
+# 训练结果
+results/
+wandb/
+*.png
+*.bmp
+
+SPECTdenoising/
+superresolution/
+草稿本.ipynb

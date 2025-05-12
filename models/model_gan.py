@@ -44,6 +44,7 @@ class ModelGAN(ModelBase):
         self.define_optimizer()               # define optimizer
         self.load_optimizers()                # load optimizer
         self.define_scheduler()               # define scheduler
+        self.load_scheduler_states()          # load scheduler states
         self.log_dict = OrderedDict()         # log
 
     # ----------------------------------------
@@ -83,6 +84,20 @@ class ModelGAN(ModelBase):
             self.load_optimizer(load_path_optimizerD, self.D_optimizer)
 
     # ----------------------------------------
+    # load scheduler states
+    # ----------------------------------------
+    def load_scheduler_states(self):
+        load_path_schedulerG = self.opt['path'].get('pretrained_schedulerG')
+        if load_path_schedulerG is not None and len(self.schedulers) > 0:
+            print('Loading schedulerG [{:s}] ...'.format(load_path_schedulerG))
+            self.load_scheduler(load_path_schedulerG, self.schedulers[0]) # Assuming G scheduler is the first
+        
+        load_path_schedulerD = self.opt['path'].get('pretrained_schedulerD')
+        if load_path_schedulerD is not None and len(self.schedulers) > 1:
+            print('Loading schedulerD [{:s}] ...'.format(load_path_schedulerD))
+            self.load_scheduler(load_path_schedulerD, self.schedulers[1]) # Assuming D scheduler is the second
+
+    # ----------------------------------------
     # save model / optimizer(optional)
     # ----------------------------------------
     def save(self, iter_label):
@@ -94,6 +109,12 @@ class ModelGAN(ModelBase):
             self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', iter_label)
         if self.opt_train['D_optimizer_reuse']:
             self.save_optimizer(self.save_dir, self.D_optimizer, 'optimizerD', iter_label)
+        
+        # Save scheduler states
+        if len(self.schedulers) > 0:
+            self.save_scheduler(self.save_dir, self.schedulers[0], 'schedulerG', iter_label)
+        if len(self.schedulers) > 1:
+            self.save_scheduler(self.save_dir, self.schedulers[1], 'schedulerD', iter_label)
 
     # ----------------------------------------
     # define loss
