@@ -68,14 +68,15 @@
     "G_optimizer_reuse": true,          // 是否重用优化器状态（从之前的检查点加载）
 
     "G_scheduler_type": "MultiStepLR",  // 学习率调度器类型："MultiStepLR" | "CosineAnnealingLR"
-    "G_scheduler_milestones": [3000, 6000, 9000, 12000],  // 学习率下降的里程碑（迭代次数）
+    "G_scheduler_milestones_percent": [0.25, 0.50, 0.75, 0.90], // 新的：学习率下降的里程碑（占总迭代次数的百分比）
     "G_scheduler_gamma": 0.5,           // 学习率衰减系数，每到达一个里程碑，学习率乘以该系数
 
     "G_regularizer_orthstep": null,     // 正交正则化步长，用于控制网络权重正交性，防止过拟合，null表示不使用
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
-    "checkpoint_print": 10,              // 打印损失间隔
+    "checkpoint_print": 10,             // 打印损失间隔
     "checkpoint_test": 200,             // 验证指标间隔
-    "checkpoint_save": 2000             // 保存模型间隔
+    "checkpoint_save": 200,            // 保存模型间隔
+    "max_epoch": 100                    // 最大训练轮次 (epoch)
   }
 }

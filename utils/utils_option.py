@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import re
 import glob
+import math
 
 
 '''
@@ -105,6 +106,42 @@ def parse(opt_path, is_train=True):
         opt['dist'] = False
     opt['num_gpu'] = len(opt['gpu_ids'])
     print('number of GPUs is: ' + str(opt['num_gpu']))
+
+    # ----------------------------------------
+    # Training specific calculations: max_iter and scheduler milestones
+    # ----------------------------------------
+    if is_train:
+        # Calculate max_iter from max_epoch if specified
+        if 'max_epoch' in opt['train'] and opt['train']['max_epoch'] is not None:
+            if 'datasets' in opt and 'train' in opt['datasets'] and \
+               'num_sampled' in opt['datasets']['train'] and \
+               'dataloader_batch_size' in opt['datasets']['train']:
+                
+                num_sampled_patches_per_epoch = opt['datasets']['train']['num_sampled'] # For spectpatch, len(dataset) is num_sampled
+                num_patches_per_image = opt['datasets']['train']['num_patches_per_image']
+                batch_size = opt['datasets']['train']['dataloader_batch_size']
+                max_epoch = opt['train']['max_epoch']
+
+                if batch_size > 0 :
+                    iter_per_epoch = math.ceil(num_sampled_patches_per_epoch * num_patches_per_image / batch_size)
+                    calculated_max_iter = iter_per_epoch * max_epoch
+                    opt['train']['max_iter'] = calculated_max_iter
+                    print(f"INFO: Calculated max_iter: {calculated_max_iter} (max_epoch: {max_epoch}, iter_per_epoch: {iter_per_epoch}, samples_per_epoch: {num_sampled_patches_per_epoch}, batch_size: {batch_size})")
+                else:
+                    print("WARNING: dataloader_batch_size is 0 or not specified. Cannot calculate iter_per_epoch and max_iter.")
+            else:
+                print("WARNING: 'max_epoch' is set, but required dataset parameters ('num_sampled', 'dataloader_batch_size') are missing for 'train' dataset. Cannot calculate 'max_iter'.")
+        
+        # Calculate G_scheduler_milestones from G_scheduler_milestones_percent
+        if 'G_scheduler_milestones_percent' in opt['train'] and opt['train']['G_scheduler_milestones_percent'] is not None:
+            if 'max_iter' in opt['train'] and opt['train']['max_iter'] is not None:
+                max_iter_for_scheduler = opt['train']['max_iter']
+                milestone_percents = opt['train']['G_scheduler_milestones_percent']
+                calculated_milestones_iter = [int(p * max_iter_for_scheduler) for p in milestone_percents]
+                opt['train']['G_scheduler_milestones'] = calculated_milestones_iter
+                print(f"INFO: Calculated G_scheduler_milestones: {calculated_milestones_iter} (from G_scheduler_milestones_percent: {milestone_percents} & max_iter: {max_iter_for_scheduler})")
+            else:
+                print("WARNING: 'G_scheduler_milestones_percent' is set, but 'max_iter' is not available (neither from config nor calculated from 'max_epoch'). Cannot calculate 'G_scheduler_milestones'.")
 
     # ----------------------------------------
     # default setting for perceptual loss

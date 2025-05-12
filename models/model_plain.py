@@ -86,13 +86,58 @@ class ModelPlain(ModelBase):
     # save model / optimizer(optional)
     # ----------------------------------------
     def save(self, iter_label):
+        # 保存 netG 模型前先删除旧的检查点
+        self._delete_old_checkpoints('G')
         self.save_network(self.save_dir, self.netG, 'G', iter_label)
+        
         if self.opt_train['E_decay'] > 0:
+            # 保存 netE 模型前先删除旧的检查点
+            self._delete_old_checkpoints('E')
             self.save_network(self.save_dir, self.netE, 'E', iter_label)
+            
         if self.opt_train['G_optimizer_reuse']:
+            # 保存优化器前先删除旧的检查点
+            self._delete_old_checkpoints('optimizerG')
             self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', iter_label)
+            
         if self.schedulers: 
+            # 保存调度器前先删除旧的检查点
+            self._delete_old_checkpoints('schedulerG')
             self.save_scheduler(self.save_dir, self.schedulers[0], 'schedulerG', iter_label)
+    
+    # ----------------------------------------
+    # 删除旧的检查点模型
+    # ----------------------------------------
+    def _delete_old_checkpoints(self, model_type):
+        import os
+        import re
+        
+        # 查找目录中所有与指定类型匹配的检查点文件
+        checkpoint_files = []
+        for filename in os.listdir(self.save_dir):
+            if filename.endswith(f'_{model_type}.pth'):
+                checkpoint_files.append(filename)
+        
+        # 如果找到了多个检查点，保留最新的，删除其余的
+        if len(checkpoint_files) > 0:
+            # 提取迭代数并排序
+            iterations = []
+            for filename in checkpoint_files:
+                match = re.match(r'(\d+)_', filename)
+                if match:
+                    iterations.append((int(match.group(1)), filename))
+            
+            # 按迭代次数从大到小排序
+            iterations.sort(reverse=True)
+            
+            # 保留最新的检查点，删除其他的
+            for i in range(1, len(iterations)):
+                iter_num, filename = iterations[i]
+
+                filepath = os.path.join(self.save_dir, filename)
+                os.remove(filepath)
+
+
 
     # ----------------------------------------
     # define loss

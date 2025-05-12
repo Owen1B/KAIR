@@ -162,15 +162,27 @@ class ModelBase():
     # ----------------------------------------
     # save the state_dict of the best network
     # ----------------------------------------
-    def save_best_network(self, network, network_label, name_suffix=''):
+    def save_best_network(self, network, network_label, name_suffix='', current_step=None):
         best_model_folder_name = 'bestmodel'
         full_best_model_dir = os.path.join(self.save_dir, best_model_folder_name)
         
         # Ensure the directory exists
         os.makedirs(full_best_model_dir, exist_ok=True)
         
-        save_filename = f'best_{name_suffix}_{network_label}.pth'
+        # 如果提供了迭代次数，则在文件名中包含
+        if current_step is not None:
+            save_filename = f'best_{name_suffix}_{network_label}_{current_step}.pth'
+        else:
+            save_filename = f'best_{name_suffix}_{network_label}.pth'
+        
         save_path = os.path.join(full_best_model_dir, save_filename)
+
+        # 删除同类型的旧的最佳模型（仅删除相同 name_suffix 和 network_label 的旧模型）
+        for old_file in os.listdir(full_best_model_dir):
+            if old_file.startswith(f'best_{name_suffix}_{network_label}') and old_file != save_filename:
+                old_file_path = os.path.join(full_best_model_dir, old_file)
+                os.remove(old_file_path)
+                    
 
         network = self.get_bare_model(network)
         state_dict = network.state_dict()

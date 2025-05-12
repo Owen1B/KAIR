@@ -9,6 +9,7 @@ from torch.utils.data.distributed import DistributedSampler
 import torch
 import wandb
 import json
+from tqdm import tqdm
 
 from utils import utils_logger
 from utils import utils_image as util
@@ -190,11 +191,19 @@ def main(json_path='SPECToptions/train_drunet.json'):
     '''
     best_psnr = 0
     best_ssim = 0
-    for epoch in range(1000000):  # keep running
+    
+    # 初始化 tqdm 进度条
+    if opt['rank'] == 0:
+        pbar = tqdm(total=opt['train']['max_iter'], initial=current_step, unit="iter", dynamic_ncols=True)
+
+    for epoch in range(1000000):  # keep running, will be stopped by max_iter
         if opt['dist']:
             train_sampler.set_epoch(epoch + seed)
+        
+        if opt['rank'] == 0 and 'pbar' in locals(): # 更新进度条的描述信息
+            pbar.set_description(f"Train Epoch {epoch}")
 
-        for _, train_data in enumerate(train_loader):
+        for i, train_data in enumerate(train_loader):
             current_step += 1
             # -------------------------------
             # 1) 喂入patch对
@@ -211,6 +220,10 @@ def main(json_path='SPECToptions/train_drunet.json'):
             # -------------------------------
             model.update_learning_rate(current_step)
 
+            # 更新进度条 (在完成一步迭代后)
+            if opt['rank'] == 0 and 'pbar' in locals():
+                pbar.update(1)
+
             # -------------------------------
             # 4) 打印训练信息
             # -------------------------------
@@ -220,7 +233,7 @@ def main(json_path='SPECToptions/train_drunet.json'):
                     epoch, current_step, model.current_learning_rate())
                 for k, v in logs.items():  
                     message += ', {:s}:{:.3e}'.format(k, v)
-                logger.info(message)                
+                logger.info(message)
                 wandb_log = {
                     'iteration':current_step,
                     'train/learning_rate': model.current_learning_rate(),
@@ -233,17 +246,22 @@ def main(json_path='SPECToptions/train_drunet.json'):
             # -------------------------------
             if current_step % opt['train']['checkpoint_test'] == 0 and opt['rank'] == 0:
                 metrics_avg, visuals_list, image_names = model.evaluate_metrics(test_loader)
-                message = '<轮次:{:3d}, 迭代:{:6,d}>, 测试结果: PSNR_g:{:<.2f}dB, SSIM_g:{:<.4f}, LPIPS_g:{:<.4f} | PSNR_l:{:<.2f}dB, SSIM_l:{:<.4f}, LPIPS_l:{:<.4f}'.format(
+                message_global = '<轮次:{:3d}, 迭代:{:6,d}>, global测试结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
                     epoch,
                     current_step,
                     metrics_avg['psnr_global'],
                     metrics_avg['ssim_global'],
-                    metrics_avg['lpips_global'],
+                    metrics_avg['lpips_global']
+                )
+                message_local = '<轮次:{:3d}, 迭代:{:6,d}>, local测试结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                    epoch,
+                    current_step,
                     metrics_avg['psnr_local'],
                     metrics_avg['ssim_local'],
                     metrics_avg['lpips_local']
                 )
-                logger.info(message)
+                logger.info(message_global)
+                logger.info(message_local)
                 metrics_dict = {
                     'test/psnr_global': metrics_avg['psnr_global'],
                     'test/ssim_global': metrics_avg['ssim_global'],
@@ -262,13 +280,13 @@ def main(json_path='SPECToptions/train_drunet.json'):
                 
                 if current_psnr_global > best_psnr:
                     best_psnr = current_psnr_global
-                    model.save_best_network(model.netG, 'G', 'psnr_global')
+                    model.save_best_network(model.netG, 'G', 'psnr_global', current_step)
                     logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已保存最佳PSNR_global模型: {:.2f}dB'.format(epoch, current_step, best_psnr))
                     save_images = True
                 
                 if current_ssim_global > best_ssim:
                     best_ssim = current_ssim_global
-                    model.save_best_network(model.netG, 'G', 'ssim_global')
+                    model.save_best_network(model.netG, 'G', 'ssim_global', current_step)
                     logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已保存最佳SSIM_global模型: {:.4f}'.format(epoch, current_step, best_ssim))
                     save_images = True
                 
@@ -282,10 +300,29 @@ def main(json_path='SPECToptions/train_drunet.json'):
             # -------------------------------
             if current_step % opt['train']['checkpoint_save'] == 0 and opt['rank'] == 0:
                 model.save(current_step)
-                logger.info('<迭代:{:6,d}>, 已保存模型'.format(current_step))
+                logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已定期保存模型'.format(epoch, current_step))
 
-    # 在训练结束时关闭wandb
+            # -------------------------------
+            # 7) 检查是否达到最大迭代次数
+            # -------------------------------
+            if 'max_iter' in opt['train'] and current_step >= opt['train']['max_iter']:
+                if opt['rank'] == 0:
+                    logger.info('<迭代:{:6,d}>, 已达到最大迭代次数 {:,d}, 训练结束'.format(
+                        current_step, opt['train']['max_iter']))
+                    # 保存最终模型
+                    model.save(current_step)
+                break
+        
+        # 达到最大迭代次数后跳出外层epoch循环
+        if 'max_iter' in opt['train'] and current_step >= opt['train']['max_iter']:
+            if opt['rank'] == 0 and 'pbar' in locals():
+                pbar.close()
+            break
+
+    # 在训练结束时关闭wandb 和 tqdm (如果循环正常结束且pbar存在)
     if opt['rank'] == 0:
+        if 'pbar' in locals() and pbar.n < pbar.total: # Check if pbar was created and not already closed by break
+            pbar.close()
         wandb.finish()
 
 if __name__ == '__main__':
