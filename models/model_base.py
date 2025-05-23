@@ -290,6 +290,7 @@ class ModelBase():
         # 初始化指标累加器
         metrics_sum_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
         metrics_sum_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        loss_sum = 0
         count = 0
         
         # 存储所有图像数据和文件名
@@ -311,6 +312,10 @@ class ModelBase():
                 self.test()
                 visuals = self.current_visuals()
                 
+                # 计算loss
+                loss = self.G_lossfn_weight * self.G_lossfn(self.E, self.H)
+                loss_sum += loss.item()
+                
                 image_name_ext = os.path.basename(test_data['L_path'][0])
                 image_name = os.path.splitext(image_name_ext)[0]
                 image_names.append(image_name)
@@ -319,13 +324,15 @@ class ModelBase():
                     img = visuals[key].cpu().float().numpy().transpose((1, 2, 0))
                     img_norm = utils_spect.denormalize_spect(
                                 img, 
-                                self.opt['datasets']['test']['normalization']
+                                self.opt['datasets']['test']['normalization']['type'],
+                                self.opt['datasets']['test']['normalization']['max_pixel']
                             )
                     all_imgs[key].append(img_norm)
         
         # 计算全局最大最小值 (用于全局归一化指标和图像保存)
-        all_values_for_global_norm = np.concatenate([img.flatten() for key in ['H', 'L'] for img in all_imgs[key]])
-        min_val_global, max_val_global = np.min(all_values_for_global_norm), np.max(all_values_for_global_norm)
+        all_H_values = np.concatenate([img.flatten() for img in all_imgs['H']])
+        max_val_global = np.max(all_H_values) * 1  # 设置为H最大值的110%
+        min_val_global = 0  # 固定最小值为0
         
         # 计算每张图片的指标并生成可视化
         visuals_list = []
@@ -338,11 +345,13 @@ class ModelBase():
             # --- 全局归一化处理 (用于图像保存和全局指标) ---
             imgs_255_global = {}
             for key, img in zip(['L', 'E', 'H'], [L_img_norm, E_img_norm, H_img_norm]):
+                # 先clip到[0, max_val_global]
+                img_clipped = np.clip(img, 0, max_val_global)
                 # 归一化到[0,255]
-                img_255 = np.clip(((img - min_val_global) / (max_val_global - min_val_global) * 255), 0, 255).astype(np.uint8)
+                img_255 = (img_clipped / max_val_global * 255).astype(np.uint8)
                 imgs_255_global[key] = img_255
                 
-                # 保存每个通道为RGB图 (图像保存逻辑不变)
+                # 保存每个通道为RGB图
                 for ch in range(img.shape[2]):
                     gray_img = img_255[:, :, ch]
                     rgb_img = np.stack([gray_img, gray_img, gray_img], axis=2)
@@ -361,30 +370,27 @@ class ModelBase():
                 metrics_sum_global['lpips'] += lpips_global
 
             # --- 局部/自适应归一化处理 (仅用于局部指标计算) ---
-            min_val_local = min(np.min(L_img_norm), np.min(H_img_norm))
-            max_val_local = max(np.max(L_img_norm), np.max(H_img_norm))
+            max_val_local = np.max(H_img_norm) * 1  # 设置为当前H最大值的110%
+            min_val_local = 0  # 固定最小值为0
             
-            # 防止 max_val_local == min_val_local 导致除以零
-            if max_val_local == min_val_local:
-                # 如果范围为0，则PSNR为inf (如果图像相同) 或0 (如果不同但范围为0)，SSIM为1或0
-                # LPIPS可能仍能计算或给出特定值。为简单起见，如果范围为0，我们跳过该样本的局部指标计算
-                # 或可以赋予特定值，如PSNR=0, SSIM=0, LPIPS=1 (表示差异大)
-                # 这里选择跳过，但实践中可能需要更鲁棒的处理
-                pass # 或者将该通道的局部指标设为特定值，如0或nan
-            else:
-                for ch in range(L_img_norm.shape[2]):
-                    E_ch_local = np.clip(((E_img_norm[:,:,ch] - min_val_local) / (max_val_local - min_val_local) * 255), 0, 255).astype(np.uint8)
-                    H_ch_local = np.clip(((H_img_norm[:,:,ch] - min_val_local) / (max_val_local - min_val_local) * 255), 0, 255).astype(np.uint8)
-                    
-                    # 扩展为3通道RGB图像以供度量函数使用
-                    E_rgb_local = np.stack([E_ch_local, E_ch_local, E_ch_local], axis=2)
-                    H_rgb_local = np.stack([H_ch_local, H_ch_local, H_ch_local], axis=2)
-                    psnr_local = util.calculate_psnr(E_rgb_local, H_rgb_local)
-                    ssim_local = util.calculate_ssim(E_rgb_local, H_rgb_local)
-                    lpips_local = util.calculate_lpips(E_rgb_local, H_rgb_local)
-                    metrics_sum_local['psnr'] += psnr_local
-                    metrics_sum_local['ssim'] += ssim_local
-                    metrics_sum_local['lpips'] += lpips_local
+            for ch in range(L_img_norm.shape[2]):
+                # 先clip到[0, max_val_local]
+                E_ch_clipped = np.clip(E_img_norm[:,:,ch], 0, max_val_local)
+                H_ch_clipped = np.clip(H_img_norm[:,:,ch], 0, max_val_local)
+                
+                # 归一化到[0,255]
+                E_ch_local = (E_ch_clipped / max_val_local * 255).astype(np.uint8)
+                H_ch_local = (H_ch_clipped / max_val_local * 255).astype(np.uint8)
+                
+                # 扩展为3通道RGB图像以供度量函数使用
+                E_rgb_local = np.stack([E_ch_local, E_ch_local, E_ch_local], axis=2)
+                H_rgb_local = np.stack([H_ch_local, H_ch_local, H_ch_local], axis=2)
+                psnr_local = util.calculate_psnr(E_rgb_local, H_rgb_local)
+                ssim_local = util.calculate_ssim(E_rgb_local, H_rgb_local)
+                lpips_local = util.calculate_lpips(E_rgb_local, H_rgb_local)
+                metrics_sum_local['psnr'] += psnr_local
+                metrics_sum_local['ssim'] += ssim_local
+                metrics_sum_local['lpips'] += lpips_local
 
             # 为每个样本创建可视化图像 (基于全局归一化的图像)
             fig = plt.figure(figsize=(8, 20))
@@ -397,19 +403,17 @@ class ModelBase():
             }
             
             sample_imgs_for_vis = {'L': L_img_norm, 'E': E_img_norm, 'H': H_img_norm}
-            # 可视化时也使用全局的min/max进行一致的显示
-            vmax_vis = max(np.max(L_img_norm), np.max(H_img_norm))
-            vmin_vis = min(np.min(L_img_norm), np.min(H_img_norm))
+            # 可视化时使用局部的min/max
+            vmax_vis = max_val_local
+            vmin_vis = min_val_local
 
-            
             # 添加大标题显示PSNR和SSIM
             plt.suptitle(f'PSNR: {psnr_local:.2f}dB, SSIM: {ssim_local:.4f}', fontsize=16)
 
             for row, view in enumerate(['Anterior', 'Posterior']):
                 for col, (key, title) in enumerate(titles.items()):
                     ax = plt.subplot(gs[row, col])
-                    # 使用imgs_255_global中的图像进行可视化，或者使用原始的L_img_norm等并指定全局的vmin, vmax
-                    # 这里我们使用原始图像配合全局的min_val_global, max_val_global进行显示，确保一致性
+                    # 使用原始图像配合局部的min_val_local, max_val_local进行显示
                     im = ax.imshow(sample_imgs_for_vis[key][:,:,row], cmap='gray', vmin=vmin_vis, vmax=vmax_vis)
                     ax.set_title(f'{title} - {view}')
                     ax.axis('off')
@@ -435,7 +439,8 @@ class ModelBase():
         if total_channels == 0: # Avoid division by zero if no valid data processed
             metrics_avg = {
                 'psnr_global': 0, 'ssim_global': 0, 'lpips_global': 0,
-                'psnr_local': 0, 'ssim_local': 0, 'lpips_local': 0
+                'psnr_local': 0, 'ssim_local': 0, 'lpips_local': 0,
+                'loss': 0
             }
         else:
             metrics_avg = {
@@ -445,6 +450,7 @@ class ModelBase():
                 'psnr_local': metrics_sum_local['psnr'] / total_channels,
                 'ssim_local': metrics_sum_local['ssim'] / total_channels,
                 'lpips_local': metrics_sum_local['lpips'] / total_channels,
+                'loss': loss_sum / count,
                 # 'fid': metrics_sum['fid'] # FID已经是一个整体值
             }
         

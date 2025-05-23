@@ -101,3 +101,25 @@ class RRDBNet(nn.Module):
         out = self.conv_last(self.lrelu(self.HRconv(fea)))
 
         return out
+
+
+class RRDBNet_noUp(nn.Module):
+    def __init__(self, in_nc=3, out_nc=3, nf=64, nb=23, gc=32):
+        super(RRDBNet_noUp, self).__init__()
+        RRDB_block_f = functools.partial(RRDB, nf=nf, gc=gc)
+        print([in_nc, out_nc, nf, nb, gc])
+
+        self.conv_first = nn.Conv2d(in_nc, nf, 3, 1, 1, bias=True)
+        self.RRDB_trunk = make_layer(RRDB_block_f, nb)
+        self.trunk_conv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.HRconv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.conv_last = nn.Conv2d(nf, out_nc, 3, 1, 1, bias=True)
+
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
+
+    def forward(self, x):
+        fea = self.conv_first(x)
+        trunk = self.trunk_conv(self.RRDB_trunk(fea))
+        fea = fea + trunk
+        out = self.conv_last(self.lrelu(self.HRconv(fea)))
+        return out

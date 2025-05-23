@@ -113,24 +113,26 @@ def parse(opt_path, is_train=True):
     if is_train:
         # Calculate max_iter from max_epoch if specified
         if 'max_epoch' in opt['train'] and opt['train']['max_epoch'] is not None:
-            if 'datasets' in opt and 'train' in opt['datasets'] and \
-               'num_sampled' in opt['datasets']['train'] and \
-               'dataloader_batch_size' in opt['datasets']['train']:
+            # 检查是否存在定义数据集大小和批处理大小的必要参数
+            if ('datasets' in opt and 'train' in opt['datasets'] and
+                    'start_index' in opt['datasets']['train'] and
+                    'end_index' in opt['datasets']['train'] and
+                    'dataloader_batch_size' in opt['datasets']['train']):
                 
-                num_sampled_patches_per_epoch = opt['datasets']['train']['num_sampled'] # For spectpatch, len(dataset) is num_sampled
-                num_patches_per_image = opt['datasets']['train']['num_patches_per_image']
+                num_items_per_epoch = opt['datasets']['train']['end_index'] - opt['datasets']['train']['start_index']
                 batch_size = opt['datasets']['train']['dataloader_batch_size']
                 max_epoch = opt['train']['max_epoch']
 
-                if batch_size > 0 :
-                    iter_per_epoch = math.ceil(num_sampled_patches_per_epoch * num_patches_per_image / batch_size)
+                if batch_size > 0:
+                    iter_per_epoch = math.ceil(num_items_per_epoch / batch_size)
                     calculated_max_iter = iter_per_epoch * max_epoch
                     opt['train']['max_iter'] = calculated_max_iter
-                    print(f"INFO: Calculated max_iter: {calculated_max_iter} (max_epoch: {max_epoch}, iter_per_epoch: {iter_per_epoch}, samples_per_epoch: {num_sampled_patches_per_epoch}, batch_size: {batch_size})")
+                    print(f"信息: 已计算 max_iter: {calculated_max_iter} (max_epoch: {max_epoch}, iter_per_epoch: {iter_per_epoch}, 每个epoch的训练项目数: {num_items_per_epoch}, batch_size: {batch_size})")
                 else:
-                    print("WARNING: dataloader_batch_size is 0 or not specified. Cannot calculate iter_per_epoch and max_iter.")
+                    print("警告: dataloader_batch_size 为 0 或未指定。无法计算 iter_per_epoch 和 max_iter。")
             else:
-                print("WARNING: 'max_epoch' is set, but required dataset parameters ('num_sampled', 'dataloader_batch_size') are missing for 'train' dataset. Cannot calculate 'max_iter'.")
+                print("警告: 'max_epoch' 已设置, 但 'train' 数据集缺少计算 'max_iter' 所需的参数（例如 'start_index', 'end_index', 'dataloader_batch_size'）。")
+                print("       请在 datasets.train 配置中提供 'start_index' 和 'end_index' 来定义训练集范围。")
         
         # Calculate G_scheduler_milestones from G_scheduler_milestones_percent
         if 'G_scheduler_milestones_percent' in opt['train'] and opt['train']['G_scheduler_milestones_percent'] is not None:

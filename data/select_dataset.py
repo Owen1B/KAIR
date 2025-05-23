@@ -33,6 +33,8 @@ def define_Dataset(dataset_opt):
         from data.dataset_spect import DatasetSPECT as D
     elif dataset_type in ['spectpatch']:
         from data.dataset_spectpatch import DatasetSPECTPatch as D
+    elif dataset_type in ['spectideal']:
+        from data.dataset_spect_ideal import DatasetSPECTIdeal as D
     # -----------------------------------------
     # super-resolution
     # -----------------------------------------

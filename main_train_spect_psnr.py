@@ -29,7 +29,7 @@ from models.select_model import define_Model
 '''
 
 
-def main(json_path='SPECToptions/train_drunet.json'):
+def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
 
     '''
     # ----------------------------------------
@@ -138,7 +138,7 @@ def main(json_path='SPECToptions/train_drunet.json'):
 
     # ----------------------------------------
     # 1) 创建数据集
-    # 2) 为训练和测试创建数据加载器
+    # 2) 为训练、验证和测试创建数据加载器
     # ----------------------------------------
     for phase, dataset_opt in opt['datasets'].items():
         if phase == 'train':
@@ -162,12 +162,21 @@ def main(json_path='SPECToptions/train_drunet.json'):
                                           num_workers=dataset_opt['dataloader_num_workers'],
                                           drop_last=True,
                                           pin_memory=True)
-
         elif phase == 'test':
             test_set = define_Dataset(dataset_opt)
             test_loader = DataLoader(test_set, batch_size=1,
                                      shuffle=False, num_workers=1,
                                      drop_last=False, pin_memory=True)
+        elif phase.startswith('val_'):
+            # 为每个验证集创建数据加载器
+            val_set = define_Dataset(dataset_opt)
+            val_loader = DataLoader(val_set, batch_size=1,
+                                   shuffle=False, num_workers=1,
+                                   drop_last=False, pin_memory=True)
+            # 将验证集加载器存储在字典中
+            if 'val_loaders' not in locals():
+                val_loaders = {}
+            val_loaders[phase] = val_loader
         else:
             raise NotImplementedError("阶段 [%s] 未被识别." % phase)
 
@@ -229,7 +238,7 @@ def main(json_path='SPECToptions/train_drunet.json'):
             # -------------------------------
             if current_step % opt['train']['checkpoint_print'] == 0 and opt['rank'] == 0:
                 logs = model.current_log()
-                message = '<轮次:{:3d}, 迭代:{:6,d}, 学习率:{:.3e}>'.format(
+                message = '<轮次:{:3d}, 迭代:{:6,d}>, 学习率:{:.3e}'.format(
                     epoch, current_step, model.current_learning_rate())
                 for k, v in logs.items():  
                     message += ', {:s}:{:.3e}'.format(k, v)
@@ -245,6 +254,7 @@ def main(json_path='SPECToptions/train_drunet.json'):
             # 5) 评估模型并保存最佳模型及图像
             # -------------------------------
             if current_step % opt['train']['checkpoint_test'] == 0 and opt['rank'] == 0:
+                # 测试集评估
                 metrics_avg, visuals_list, image_names = model.evaluate_metrics(test_loader)
                 message_global = '<轮次:{:3d}, 迭代:{:6,d}>, global测试结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
                     epoch,
@@ -268,9 +278,43 @@ def main(json_path='SPECToptions/train_drunet.json'):
                     'test/lpips_global': metrics_avg['lpips_global'],
                     'test/psnr_local': metrics_avg['psnr_local'],
                     'test/ssim_local': metrics_avg['ssim_local'],
-                    'test/lpips_local': metrics_avg['lpips_local']
+                    'test/lpips_local': metrics_avg['lpips_local'],
+                    'test/loss': metrics_avg['loss']
                 }
                 wandb.log({'iteration': current_step, **metrics_dict})
+
+                # 验证集评估（如果存在）
+                if 'val_loaders' in locals():
+                    for val_name, val_loader in val_loaders.items():
+                        val_metrics_avg, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader)
+                        val_message_global = '<轮次:{:3d}, 迭代:{:6,d}>, {} global验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                            epoch,
+                            current_step,
+                            val_name,
+                            val_metrics_avg['psnr_global'],
+                            val_metrics_avg['ssim_global'],
+                            val_metrics_avg['lpips_global']
+                        )
+                        val_message_local = '<轮次:{:3d}, 迭代:{:6,d}>, {} local验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                            epoch,
+                            current_step,
+                            val_name,
+                            val_metrics_avg['psnr_local'],
+                            val_metrics_avg['ssim_local'],
+                            val_metrics_avg['lpips_local']
+                        )
+                        logger.info(val_message_global)
+                        logger.info(val_message_local)
+                        val_metrics_dict = {
+                            f'{val_name}/psnr_global': val_metrics_avg['psnr_global'],
+                            f'{val_name}/ssim_global': val_metrics_avg['ssim_global'],
+                            f'{val_name}/lpips_global': val_metrics_avg['lpips_global'],
+                            f'{val_name}/psnr_local': val_metrics_avg['psnr_local'],
+                            f'{val_name}/ssim_local': val_metrics_avg['ssim_local'],
+                            f'{val_name}/lpips_local': val_metrics_avg['lpips_local'],
+                            f'{val_name}/loss': val_metrics_avg['loss']
+                        }
+                        wandb.log({'iteration': current_step, **val_metrics_dict})
                 
                 # 最佳模型的判断基于全局PSNR和全局SSIM (与之前行为保持一致)
                 current_psnr_global = metrics_avg['psnr_global']
@@ -289,11 +333,18 @@ def main(json_path='SPECToptions/train_drunet.json'):
                     model.save_best_network(model.netG, 'G', 'ssim_global', current_step)
                     logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已保存最佳SSIM_global模型: {:.4f}'.format(epoch, current_step, best_ssim))
                     save_images = True
-                
+                save_images = True
+
                 # 最佳模型更新时保存一次图像
                 if save_images:
                     for img_array, img_name in zip(visuals_list, image_names):
-                        wandb.log({f"best_model_images/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                        wandb.log({f"images/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                    # 保存验证集图像
+                    if 'val_loaders' in locals():
+                        for val_name, val_loader in val_loaders.items():
+                            _, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader)
+                            for img_array, img_name in zip(val_visuals_list, val_image_names):
+                                wandb.log({f"images_{val_name}/{img_name}": wandb.Image(img_array), 'iteration': current_step})
 
             # -------------------------------
             # 6) 定期保存模型

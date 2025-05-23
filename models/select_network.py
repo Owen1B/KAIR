@@ -140,7 +140,14 @@ def define_G(opt):
                    nb=opt_net['nb'],
                    gc=opt_net['gc'],
                    sf=opt_net['scale'])
-
+        
+    elif net_type == 'rrdbnet_no_up':  # RRDBNet
+        from models.network_rrdbnet import RRDBNet_noUp as net
+        netG = net(in_nc=opt_net['in_nc'],
+                   out_nc=opt_net['out_nc'],
+                   nf=opt_net['nf'],
+                   nb=opt_net['nb'],
+                   gc=opt_net['gc'])
     # ----------------------------------------
     # IMDB
     # ----------------------------------------
