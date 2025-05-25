@@ -1,6 +1,7 @@
 import sys
 import os
-
+import warnings
+warnings.filterwarnings("ignore")
 # 将项目根目录 (KAIR) 添加到 Python 的模块搜索路径
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
@@ -11,10 +12,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import math
+import matplotlib.pyplot as plt
 
 from utils import utils_image as util
 from utils import utils_option as option
-from utils import utils_spect # For denormalization
 from data.select_dataset import define_Dataset
 
 '''
@@ -24,184 +25,194 @@ from data.select_dataset import define_Dataset
 # --------------------------------------------
 '''
 
-def main(json_path='SPECToptions/train_drunet.json'):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--opt', type=str, default=json_path, help='Path to option JSON file.')
-    args = parser.parse_args()
-    opt = option.parse(args.opt, is_train=False) # is_train=False as we are only testing
-
-    print(f"Starting evaluation of L vs H metrics for: {args.opt}")
-    if 'datasets' in opt and 'test' in opt['datasets']:
-        print(option.dict2str(opt['datasets']['test']))
-    else:
-        print("ERROR: Test dataset configuration not found or incomplete in options file.")
-        return
-
-    device = torch.device('cuda' if opt.get('gpu_ids') is not None else 'cpu')
-    print(f"Using device: {device}")
-
-    dataset_opt = opt['datasets'].get('test')
-    if not dataset_opt: # Ensure dataset_opt is not None before passing to define_Dataset
-        print("ERROR: Test dataset configuration (dataset_opt) is None.")
-        return
-
+def evaluate_dataset(dataset_opt, device):
+    """评估单个数据集的指标"""
     test_set = define_Dataset(dataset_opt)
     test_loader = DataLoader(test_set, batch_size=1,
-                             shuffle=False, num_workers=1,
-                             drop_last=False, pin_memory=True)
-    print(f"Number of test images: {len(test_set)}")
-
-    # --- Pass 1: Collect all denormalized images and their names ---
-    all_L_images_denorm = []
-    all_H_images_denorm = []
-    all_image_names = []
-    norm_params = opt['datasets']['test'].get('normalization')
-    if not norm_params:
-        print("ERROR: Normalization parameters (opt['datasets']['test']['normalization']) not found. Cannot proceed with denormalization.")
-        return
-
-    print("\n--- Pass 1: Collecting and denormalizing all test images ---")
-    for i, test_data in enumerate(test_loader):
-        image_name_ext = os.path.basename(test_data['L_path'][0])
-        image_name = os.path.splitext(image_name_ext)[0]
-        all_image_names.append(image_name)
-        print(f"Collecting image {i+1}/{len(test_set)}: {image_name}")
-
+                           shuffle=False, num_workers=1,
+                           drop_last=False, pin_memory=True)
+    
+    # 初始化指标累加器
+    metrics_sum_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+    metrics_sum_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+    count = 0
+    
+    # 存储所有图像数据
+    all_imgs = {'L': [], 'H': []}
+    image_names = []
+    
+    # 遍历：收集所有图像数据
+    for test_data in test_loader:
         L_tensor = test_data['L'].squeeze(0).cpu().float()
         H_tensor = test_data['H'].squeeze(0).cpu().float()
-
+        
         L_img_hwc = np.transpose(L_tensor.numpy(), (1, 2, 0))
         H_img_hwc = np.transpose(H_tensor.numpy(), (1, 2, 0))
         
-        L_img_denorm = utils_spect.denormalize_spect(L_img_hwc, norm_params)
-        H_img_denorm = utils_spect.denormalize_spect(H_img_hwc, norm_params)
+        image_name_ext = os.path.basename(test_data['L_path'][0])
+        image_name = os.path.splitext(image_name_ext)[0]
+        image_names.append(image_name)
         
-        all_L_images_denorm.append(L_img_denorm)
-        all_H_images_denorm.append(H_img_denorm)
-
-    if not all_L_images_denorm:
-        print("No images were collected. Exiting.")
-        return
-
-    # --- Calculate Global Min/Max for Normalization ---
-    print("\n--- Calculating global min/max for normalization ---")
-    # Consider only L and H for global range, similar to model_base.py
-    all_pixel_values_for_global_norm = []
-    for l_img, h_img in zip(all_L_images_denorm, all_H_images_denorm):
-        all_pixel_values_for_global_norm.append(l_img.flatten())
-        all_pixel_values_for_global_norm.append(h_img.flatten())
+        all_imgs['L'].append(L_img_hwc)
+        all_imgs['H'].append(H_img_hwc)
     
-    if not all_pixel_values_for_global_norm:
-        print("ERROR: No pixel values collected for global normalization. Exiting.")
-        return
+    if not all_imgs['L']:
+        return None, [], []
+    
+    # 计算全局最大最小值
+    all_H_values = np.concatenate([img.flatten() for img in all_imgs['H']])
+    max_val_global = np.max(all_H_values) * 1  # 设置为H最大值的110%
+    min_val_global = 0  # 固定最小值为0
+    
+    # 计算每张图片的指标并生成可视化
+    visuals_list = []
+    
+    for idx, (L_img, H_img) in enumerate(zip(all_imgs['L'], all_imgs['H'])):
+        count += 1
+        image_name = image_names[idx]
         
-    global_min_val = np.min(np.concatenate(all_pixel_values_for_global_norm))
-    global_max_val = np.max(np.concatenate(all_pixel_values_for_global_norm))
-    print(f"Global Min: {global_min_val:.4f}, Global Max: {global_max_val:.4f}")
-
-    if global_max_val == global_min_val:
-        print("WARNING: Global min and max are equal. Global metrics will likely be Inf/NaN or 0. Proceeding with caution.")
-        # Avoid division by zero later by making them slightly different if they are equal.
-        # This is a simple fix; a more robust solution might involve skipping global metrics.
-        if global_max_val == global_min_val:
-            global_max_val += 1e-6 # Add a small epsilon if they are exactly the same and non-zero
-            if global_max_val == 0 and global_min_val == 0: # if both are zero
-                 global_max_val = 1.0 # or some other non-zero range
-
-
-    # --- Pass 2: Calculate metrics using both global and local normalization ---
-    print("\n--- Pass 2: Calculating metrics ---")
-    metrics_sum_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
-    metrics_sum_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
-    total_channels_processed_global = 0
-    total_channels_processed_local = 0
-    processed_images_count = 0
-
-    for idx, (L_img_denorm, H_img_denorm) in enumerate(zip(all_L_images_denorm, all_H_images_denorm)):
-        image_name = all_image_names[idx]
-        processed_images_count +=1
-        print(f"Processing metrics for image {idx+1}/{len(all_L_images_denorm)}: {image_name}")
+        # --- 全局归一化处理 ---
+        # 先clip到[0, max_val_global]
+        L_img_clipped = np.clip(L_img, 0, max_val_global)
+        H_img_clipped = np.clip(H_img, 0, max_val_global)
+        # 归一化到[0,255]
+        L_img_255 = (L_img_clipped / max_val_global * 255).astype(np.uint8)
+        H_img_255 = (H_img_clipped / max_val_global * 255).astype(np.uint8)
         
-        num_channels = L_img_denorm.shape[2]
-
-        # Local normalization parameters for this image pair
-        local_min_val = min(np.min(L_img_denorm), np.min(H_img_denorm))
-        local_max_val = max(np.max(L_img_denorm), np.max(H_img_denorm))
-        
-        local_norm_valid = True
-        if local_max_val == local_min_val:
-            print(f"  WARNING: Local min and max are equal for {image_name}. Skipping local metrics for this image.")
-            local_norm_valid = False
-            # Define local_max_val_calc to a safe value.
-            # This value won't be used for normalization if local_norm_valid is False.
-            local_max_val_calc = local_max_val + 1e-6 
-            if local_max_val == 0 and local_min_val == 0: 
-                 local_max_val_calc = 1.0
-        else:
-            # If local_max_val != local_min_val, local_norm_valid remains True.
-            # local_max_val_calc is local_max_val, ensuring denominator is non-zero.
-            local_max_val_calc = local_max_val
-
-
-        for ch_idx in range(num_channels):
-            L_ch_original = L_img_denorm[:, :, ch_idx]
-            H_ch_original = H_img_denorm[:, :, ch_idx]
-
-            # Calculate Global Metrics
-            if global_max_val > global_min_val: # Proceed only if global range is valid
-                L_ch_255_global = np.clip(((L_ch_original - global_min_val) / (global_max_val - global_min_val) * 255), 0, 255).astype(np.uint8)
-                H_ch_255_global = np.clip(((H_ch_original - global_min_val) / (global_max_val - global_min_val) * 255), 0, 255).astype(np.uint8)
-                L_rgb_global = np.stack([L_ch_255_global]*3, axis=2)
-                H_rgb_global = np.stack([H_ch_255_global]*3, axis=2)
-                try:
-                    metrics_sum_global['psnr'] += util.calculate_psnr(L_rgb_global, H_rgb_global)
-                    metrics_sum_global['ssim'] += util.calculate_ssim(L_rgb_global, H_rgb_global)
-                    metrics_sum_global['lpips'] += util.calculate_lpips(L_rgb_global, H_rgb_global)
-                    total_channels_processed_global += 1
-                except Exception as e:
-                    print(f"  ERROR (Global): Calculating metrics for {image_name}, channel {ch_idx}: {e}")
+        # 计算全局指标
+        for ch in range(L_img.shape[2]):
+            L_ch_255 = L_img_255[:, :, ch]
+            H_ch_255 = H_img_255[:, :, ch]
             
-            # Calculate Local Metrics
-            if local_norm_valid:
-                # Use local_max_val_calc to avoid division by zero if local_max_val == local_min_val
-                # but we already checked local_norm_valid, so this is more of a safeguard or if we change logic
-                L_ch_255_local = np.clip(((L_ch_original - local_min_val) / (local_max_val_calc - local_min_val) * 255), 0, 255).astype(np.uint8)
-                H_ch_255_local = np.clip(((H_ch_original - local_min_val) / (local_max_val_calc - local_min_val) * 255), 0, 255).astype(np.uint8)
-                L_rgb_local = np.stack([L_ch_255_local]*3, axis=2)
-                H_rgb_local = np.stack([H_ch_255_local]*3, axis=2)
-                try:
-                    metrics_sum_local['psnr'] += util.calculate_psnr(L_rgb_local, H_rgb_local)
-                    metrics_sum_local['ssim'] += util.calculate_ssim(L_rgb_local, H_rgb_local)
-                    metrics_sum_local['lpips'] += util.calculate_lpips(L_rgb_local, H_rgb_local)
-                    total_channels_processed_local += 1
-                except Exception as e:
-                    print(f"  ERROR (Local): Calculating metrics for {image_name}, channel {ch_idx}: {e}")
-
-    # --- Averaging and Printing Results ---
-    print("\n--- Average Metrics (L vs H) ---")
-    print(f"Processed {processed_images_count} images in total for metrics calculation.")
-
-    if total_channels_processed_global > 0:
-        avg_psnr_global = metrics_sum_global['psnr'] / total_channels_processed_global
-        avg_ssim_global = metrics_sum_global['ssim'] / total_channels_processed_global
-        avg_lpips_global = metrics_sum_global['lpips'] / total_channels_processed_global
-        print("\nGlobal Normalization Metrics:")
-        print(f"  Average PSNR:  {avg_psnr_global:.2f} dB ({total_channels_processed_global} channels)")
-        print(f"  Average SSIM:  {avg_ssim_global:.4f} ({total_channels_processed_global} channels)")
-        print(f"  Average LPIPS: {avg_lpips_global:.4f} (Lower is better) ({total_channels_processed_global} channels)")
+            # 扩展为3通道RGB图像以供度量函数使用
+            L_rgb = np.stack([L_ch_255]*3, axis=2)
+            H_rgb = np.stack([H_ch_255]*3, axis=2)
+            
+            psnr_global = util.calculate_psnr(L_rgb, H_rgb)
+            ssim_global = util.calculate_ssim(L_rgb, H_rgb)
+            lpips_global = util.calculate_lpips(L_rgb, H_rgb)
+            
+            metrics_sum_global['psnr'] += psnr_global
+            metrics_sum_global['ssim'] += ssim_global
+            metrics_sum_global['lpips'] += lpips_global
+        
+        # --- 局部归一化处理 ---
+        max_val_local = np.max(H_img) * 1  # 设置为当前H最大值的110%
+        min_val_local = 0  # 固定最小值为0
+        
+        for ch in range(L_img.shape[2]):
+            # 先clip到[0, max_val_local]
+            L_ch_clipped = np.clip(L_img[:,:,ch], 0, max_val_local)
+            H_ch_clipped = np.clip(H_img[:,:,ch], 0, max_val_local)
+            
+            # 归一化到[0,255]
+            L_ch_local = (L_ch_clipped / max_val_local * 255).astype(np.uint8)
+            H_ch_local = (H_ch_clipped / max_val_local * 255).astype(np.uint8)
+            
+            # 扩展为3通道RGB图像以供度量函数使用
+            L_rgb_local = np.stack([L_ch_local]*3, axis=2)
+            H_rgb_local = np.stack([H_ch_local]*3, axis=2)
+            
+            psnr_local = util.calculate_psnr(L_rgb_local, H_rgb_local)
+            ssim_local = util.calculate_ssim(L_rgb_local, H_rgb_local)
+            lpips_local = util.calculate_lpips(L_rgb_local, H_rgb_local)
+            
+            metrics_sum_local['psnr'] += psnr_local
+            metrics_sum_local['ssim'] += ssim_local
+            metrics_sum_local['lpips'] += lpips_local
+        
+        # 创建可视化图像
+        fig = plt.figure(figsize=(8, 20))
+        gs = plt.GridSpec(2, 4, height_ratios=[1, 1], width_ratios=[1, 1, 1, 0.05])
+        
+        titles = {
+            'L': 'Input (L)',
+            'H': 'Ground Truth (H)'
+        }
+        
+        sample_imgs_for_vis = {'L': L_img, 'H': H_img}
+        vmax_vis = max_val_local
+        vmin_vis = min_val_local
+        
+        # 添加大标题显示PSNR和SSIM
+        plt.suptitle(f'PSNR: {psnr_local:.2f}dB, SSIM: {ssim_local:.4f}', fontsize=16)
+        
+        for row, view in enumerate(['Anterior', 'Posterior']):
+            for col, (key, title) in enumerate(titles.items()):
+                ax = plt.subplot(gs[row, col])
+                im = ax.imshow(sample_imgs_for_vis[key][:,:,row], cmap='gray', vmin=vmin_vis, vmax=vmax_vis)
+                ax.set_title(f'{title} - {view}')
+                ax.axis('off')
+        
+        cax = plt.subplot(gs[:, 3])
+        plt.colorbar(im, cax=cax)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        
+        fig.canvas.draw()
+        img_array = np.array(fig.canvas.renderer.buffer_rgba())
+        visuals_list.append(img_array)
+        plt.close(fig)
+    
+    # 计算平均值
+    total_channels = count * L_img.shape[2] if count > 0 and L_img.ndim == 3 else count
+    if total_channels == 0:
+        metrics_avg = {
+            'psnr_global': 0, 'ssim_global': 0, 'lpips_global': 0,
+            'psnr_local': 0, 'ssim_local': 0, 'lpips_local': 0
+        }
     else:
-        print("\nGlobal Normalization Metrics: No channels processed or global range was invalid.")
+        metrics_avg = {
+            'psnr_global': metrics_sum_global['psnr'] / total_channels,
+            'ssim_global': metrics_sum_global['ssim'] / total_channels,
+            'lpips_global': metrics_sum_global['lpips'] / total_channels,
+            'psnr_local': metrics_sum_local['psnr'] / total_channels,
+            'ssim_local': metrics_sum_local['ssim'] / total_channels,
+            'lpips_local': metrics_sum_local['lpips'] / total_channels
+        }
+    
+    return metrics_avg, visuals_list, image_names
 
-    if total_channels_processed_local > 0:
-        avg_psnr_local = metrics_sum_local['psnr'] / total_channels_processed_local
-        avg_ssim_local = metrics_sum_local['ssim'] / total_channels_processed_local
-        avg_lpips_local = metrics_sum_local['lpips'] / total_channels_processed_local
-        print("\nLocal (Self) Normalization Metrics:")
-        print(f"  Average PSNR:  {avg_psnr_local:.2f} dB ({total_channels_processed_local} channels)")
-        print(f"  Average SSIM:  {avg_ssim_local:.4f} ({total_channels_processed_local} channels)")
-        print(f"  Average LPIPS: {avg_lpips_local:.4f} (Lower is better) ({total_channels_processed_local} channels)")
-    else:
-        print("\nLocal (Self) Normalization Metrics: No channels processed or all images had zero local range.")
+def main(json_path='SPECToptions/train_rrdbnet_psnr_8x.json'):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--opt', type=str, default=json_path, help='Path to option JSON file.')
+    args = parser.parse_args()
+    opt = option.parse(args.opt, is_train=False)
+    
+    device = torch.device('cuda' if opt.get('gpu_ids') is not None else 'cpu')
+
+    # 评估所有数据集
+    datasets = ['test', 'val_1', 'val_2']
+    all_results = {}
+    
+    print("\n=== Evaluation Results ===\n")
+    
+    for dataset_name in datasets:
+        if dataset_name in opt['datasets']:
+            dataset_opt = opt['datasets'][dataset_name]
+            metrics_avg, visuals_list, image_names = evaluate_dataset(dataset_opt, device)
+            
+            if metrics_avg is None:
+                continue
+                
+            all_results[dataset_name] = {
+                'metrics': metrics_avg,
+                'visuals': visuals_list,
+                'names': image_names
+            }
+            
+            # 打印结果
+            print(f"Dataset: {dataset_name}")
+            print("Global Normalization:")
+            print(f"  PSNR:  {metrics_avg['psnr_global']:.2f} dB")
+            print(f"  SSIM:  {metrics_avg['ssim_global']:.4f}")
+            print(f"  LPIPS: {metrics_avg['lpips_global']:.4f}")
+            
+            print("Local Normalization:")
+            print(f"  PSNR:  {metrics_avg['psnr_local']:.2f} dB")
+            print(f"  SSIM:  {metrics_avg['ssim_local']:.4f}")
+            print(f"  LPIPS: {metrics_avg['lpips_local']:.4f}")
+            print()
 
 if __name__ == '__main__':
     main() 
