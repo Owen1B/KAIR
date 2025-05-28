@@ -1,79 +1,74 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
+
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-def visualize_dat_file(file_path, save_dir, subdir):
+# Anscombe变换函数不再需要，可以删除或注释掉
+# def anscombe_transform(x):
+#     """Anscombe变换"""
+#     return 2 * np.sqrt(x + 3/8)
+
+# def inverse_anscombe_transform(x):
+#     """Anscombe反变换"""
+#     return (x/2)**2 - 3/8
+
+def visualize_dat_file(file_path, save_dir, vmax=100):
     """
     可视化单个dat文件的前位和后位投影
     
     参数:
         file_path: dat文件路径
         save_dir: 保存图像的目录
-        subdir: 文件夹名称
+        vmax: 显示的最大值
     """
-    # 读取数据
+    if not os.path.exists(file_path):
+        print(f"错误：文件不存在: {file_path}")
+        return
+    if not file_path.endswith('.dat'):
+        print(f"错误：文件 {file_path} 不是 .dat 文件。")
+        return
+
+    subdir = os.path.basename(os.path.dirname(file_path))
+    base_filename = os.path.basename(file_path)
+
     data = np.fromfile(file_path, dtype=np.float32)
     data = data.reshape(2, 1024, 256)
     
-    # 计算总计数
     anterior_counts = np.sum(data[0])
     posterior_counts = np.sum(data[1])
     
-    # 创建图像
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    # 创建图像，布局改为1x2
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 10))
     
-    # 显示前位投影
-    im1 = ax1.imshow(data[0], cmap='gray')
+    # 显示原始前位投影
+    im1 = ax1.imshow(data[0], cmap='gray', vmax=vmax)
     plt.colorbar(im1, ax=ax1)
-    ax1.set_title(f'前位投影\n总计数: {anterior_counts:.0f}')
+    ax1.set_title(f'原始前位投影\n总计数: {anterior_counts:.0f}')
     
-    # 显示后位投影
-    im2 = ax2.imshow(data[1], cmap='gray')
+    # 显示原始后位投影
+    im2 = ax2.imshow(data[1], cmap='gray', vmax=vmax)
     plt.colorbar(im2, ax=ax2)
-    ax2.set_title(f'后位投影\n总计数: {posterior_counts:.0f}')
+    ax2.set_title(f'原始后位投影\n总计数: {posterior_counts:.0f}')
     
-    # 设置总标题
-    plt.suptitle(f'数据集: {subdir}', fontsize=16)
-    plt.tight_layout()
+    plt.suptitle(f'数据集: {subdir}\n文件: {base_filename}', fontsize=16)
+
     
-    # 保存图像
-    save_path = os.path.join(save_dir, f'{subdir}.png')
+    safe_subdir_filename = f"{subdir.replace(os.sep, '_')}_{base_filename.replace('.dat', '')}.png"
+    save_path = os.path.join(save_dir, safe_subdir_filename)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
+    print(f"图像已保存到: {save_path}")
 
 def main():
-    # 设置基础目录
-    base_dir = 'SPECTdatasets'
-    save_dir = 'visualization_results'
+    image_path = "SPECTdatasets/spectH_XCAT_ideal_1x/B001.dat"
+    save_dir = "visualization_results_cli"  
+
     os.makedirs(save_dir, exist_ok=True)
-    
-    # 获取所有子目录
-    subdirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-    subdirs.sort()  # 按字母顺序排序
-    
-    for subdir in subdirs:
-        print(f"\n处理目录: {subdir}")
-        input_dir = os.path.join(base_dir, subdir)
-        
-        # 获取第一个dat文件
-        dat_files = [f for f in os.listdir(input_dir) if f.endswith('.dat')]
-        if not dat_files:
-            print(f"警告：在 '{input_dir}' 中未找到任何 .dat 文件")
-            continue
-            
-        first_file = dat_files[0]
-        print(f"正在显示文件: {first_file}")
-        
-        # 可视化文件
-        file_path = os.path.join(input_dir, first_file)
-        visualize_dat_file(file_path, save_dir, subdir)
-        
-    print(f"\n所有图像已保存到: {save_dir}")
-    print("生成的文件：")
-    for subdir in subdirs:
-        print(f"- {subdir}.png")
+
+    visualize_dat_file(image_path, save_dir, vmax=80)
 
 if __name__ == '__main__':
     main()

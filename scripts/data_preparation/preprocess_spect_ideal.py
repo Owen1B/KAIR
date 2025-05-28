@@ -2,6 +2,7 @@ import os
 import numpy as np
 from tqdm import tqdm
 import sys
+import bm3d # 导入bm3d
 '''
 # --------------------------------------------
 # SPECT理想图预处理脚本
@@ -19,6 +20,8 @@ import sys
 # 3. 对1x poisson进行二项重采样：
 #    - 4x binomial (0.25倍采样)
 #    - 8x binomial (0.125倍采样)
+# 4. 对1x poisson进行Anscombe+BM3D+Inverse Anscombe处理:
+#    - bm3d_1x (前后位拼接后处理)
 # --------------------------------------------
 # 数据格式：
 # - 输入：原始 .dat 文件，形状为 (2, 1024, 256) 的 float32 数组
@@ -33,6 +36,14 @@ sys.path.append(project_root)
 
 import utils.utils_image as util
 
+def _anscombe_transform(image):
+    """直接实现Anscombe变换"""
+    return 2.0 * np.sqrt(np.maximum(0, image) + 3.0/8.0)
+
+def _inverse_anscombe_transform(image_ansc):
+    """直接实现逆Anscombe变换"""
+    return (image_ansc / 2.0)**2 - 3.0/8.0
+
 def process_single_file(file_path, output_dirs, base_name):
     """
     处理单个SPECT理想图文件
@@ -45,7 +56,7 @@ def process_single_file(file_path, output_dirs, base_name):
     # 读取.dat文件
     data = np.fromfile(file_path, dtype=np.float32)
     data = data.reshape(2, 1024, 256)
-    data = data * 0.8  # 新增：整体缩放
+    data = data * 1  # 新增：整体缩放
     anterior = data[0]
     posterior = data[1]
 
@@ -56,7 +67,7 @@ def process_single_file(file_path, output_dirs, base_name):
 
     # 2. 对每个剂量水平添加泊松噪声
     # 1x poisson
-    poisson_1x = np.stack([
+    poisson_1x_original = np.stack([
         np.random.poisson(np.maximum(0, anterior)).astype(np.float32),
         np.random.poisson(np.maximum(0, posterior)).astype(np.float32)
     ], axis=0)
@@ -76,15 +87,34 @@ def process_single_file(file_path, output_dirs, base_name):
     # 3. 对1x poisson进行二项重采样
     # 4x binomial (0.25倍采样)
     binomial_4x = np.stack([
-        np.random.binomial(poisson_1x[0].astype(np.int32), 0.25).astype(np.float32) * 4,
-        np.random.binomial(poisson_1x[1].astype(np.int32), 0.25).astype(np.float32) * 4
+        np.random.binomial(poisson_1x_original[0].astype(np.int32), 0.25).astype(np.float32) * 4,
+        np.random.binomial(poisson_1x_original[1].astype(np.int32), 0.25).astype(np.float32) * 4
     ], axis=0)
 
     # 8x binomial (0.125倍采样)
     binomial_8x = np.stack([
-        np.random.binomial(poisson_1x[0].astype(np.int32), 0.125).astype(np.float32) * 8,
-        np.random.binomial(poisson_1x[1].astype(np.int32), 0.125).astype(np.float32) * 8
+        np.random.binomial(poisson_1x_original[0].astype(np.int32), 0.125).astype(np.float32) * 8,
+        np.random.binomial(poisson_1x_original[1].astype(np.int32), 0.125).astype(np.float32) * 8
     ], axis=0)
+
+    # 4. 对poisson_1x_original进行Anscombe+BM3D+Inverse Anscombe处理 (前后位拼接)
+    H_anterior_raw_poisson = poisson_1x_original[0, ...]
+    H_posterior_raw_poisson = poisson_1x_original[1, ...]
+    
+    # --- 修改开始: 独立处理前后位图像的BM3D降噪 ---
+    # 处理前位图像
+    H_anterior_ansc = _anscombe_transform(H_anterior_raw_poisson)
+    H_anterior_bm3d_denoised = bm3d.bm3d(H_anterior_ansc.astype(np.float64), sigma_psd=1.0, profile='np') # 添加 profile='np' 保持一致性
+    H_anterior_denoised_bm3d = _inverse_anscombe_transform(H_anterior_bm3d_denoised)
+    
+    # 处理后位图像
+    H_posterior_ansc = _anscombe_transform(H_posterior_raw_poisson)
+    H_posterior_bm3d_denoised = bm3d.bm3d(H_posterior_ansc.astype(np.float64), sigma_psd=1.0, profile='np') # 添加 profile='np' 保持一致性
+    H_posterior_denoised_bm3d = _inverse_anscombe_transform(H_posterior_bm3d_denoised)
+    # --- 修改结束 ---
+    
+    # 重新堆叠处理后的H图像
+    bm3d_1x = np.stack([H_anterior_denoised_bm3d, H_posterior_denoised_bm3d], axis=0)
 
     # 保存所有处理后的数据
     
@@ -94,13 +124,15 @@ def process_single_file(file_path, output_dirs, base_name):
     ideal_0125x.astype(np.float32).tofile(os.path.join(output_dirs['ideal_8x'], base_name))
     
     # 保存泊松噪声图
-    poisson_1x.astype(np.float32).tofile(os.path.join(output_dirs['poisson_1x'], base_name))
+    poisson_1x_original.astype(np.float32).tofile(os.path.join(output_dirs['poisson_1x'], base_name))
     poisson_4x.astype(np.float32).tofile(os.path.join(output_dirs['poisson_4x'], base_name))
     poisson_8x.astype(np.float32).tofile(os.path.join(output_dirs['poisson_8x'], base_name))
     
     # 保存二项重采样图
     binomial_4x.astype(np.float32).tofile(os.path.join(output_dirs['binomial_4x'], base_name))
     binomial_8x.astype(np.float32).tofile(os.path.join(output_dirs['binomial_8x'], base_name))
+
+    bm3d_1x.astype(np.float32).tofile(os.path.join(output_dirs['bm3d_1x'], base_name)) # 保存新的BM3D处理数据
 
 def main():
     # =========================================
@@ -122,6 +154,7 @@ def main():
         'poisson_8x': os.path.join(config['output_base_dir'], 'spectL_XCAT_poisson_8x'),
         'binomial_4x': os.path.join(config['output_base_dir'], 'spectL_XCAT_binomial_4x'),
         'binomial_8x': os.path.join(config['output_base_dir'], 'spectL_XCAT_binomial_8x'),
+        'bm3d_1x': os.path.join(config['output_base_dir'], 'spectH_XCAT_bm3d_1x'), # 新增BM3D输出目录
     }
 
     # 创建所有输出目录
@@ -165,6 +198,8 @@ def main():
     print('3. 二项重采样图：')
     print('   - spectL_XCAT_binomial_4x: 1x poisson的0.25倍采样')
     print('   - spectL_XCAT_binomial_8x: 1x poisson的0.125倍采样')
+    print('4. BM3D处理图：')
+    print('   - spectH_XCAT_bm3d_1x: 1x poisson (前后位拼接) + Anscombe + BM3D(sigma=1) + InvAnscombe')
 
 if __name__ == '__main__':
     main() 
