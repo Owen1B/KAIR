@@ -1,12 +1,15 @@
 {
   //-----------------全局设置---------------------
-  "task": "drunet_patch_psnr_lowlr",  // 名称
+  "task": "drunet_psnr_8x_linear_96数据集_96*96",  // 名称
   "model": "plain",                     // 模型类型："plain"｜"gan"
   "gpu_ids": [0],                       // 使用GPU ID
   "scale": 1,                           // 放大倍数，SPECT降噪设为1即可
   "n_channels": 2,                      // 输入通道数，2表示前后位
-  "speed": 4,                           // 快速扫描倍数，4表示25%剂量扫描，用于生成低计数图像
-  "normalization": "log",               // 归一化方式："anscombe" | "log"
+  "speed": 8,                           // 快速扫描倍数，4表示25%剂量扫描，用于生成低计数图像
+  "normalization": {
+    "type": "linear",                 // 归一化方式："linear" | "anscombe" | "log"
+    "max_pixel": 150
+  },
   //-----------------路径设置---------------------
   "path": {
     "root": "SPECTdenoising",           // 保存路径
@@ -15,19 +18,21 @@
   //-----------------wandb设置---------------------
   "wandb" : {
     "entity":"owen1b_",
-    "project": "bone_scan_denoising",
+    "project": "bsd3",
     "group": "drunet"
   },
   //-----------------数据集设置---------------------
   "datasets": {
     "train": {
       "name": "train_dataset",          // 仅作为名称
-      "dataset_type": "spectpatch",          // SPECT专用dataset
-      "dataroot_H": "trainsets/spectH", // 训练数据集H的路径
-      "dataroot_L": "trainsets/spectL_4x",               // 训练数据集L的路径
-      "H_size": 128,                    // 图像块大小：40 | 64 | 96 | 128 | 192
-      "num_patches_per_image": 300,
-      "num_sampled": 96,
+      "dataset_type": "spect",          // SPECT专用dataset
+      "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x", // 训练数据集H的路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x", // 训练数据集L的路径
+      "start_index": 0,
+      "end_index": 96,
+      "H_size": 96,                    // 图像块大小：40 | 64 | 96 | 128 | 192
+      "is_ideal_H": true,              // 是否为理想图
+      "use_binomial_resampling": true, // 是否使用二项重采样
       "dataloader_shuffle": true,       // 是否打乱数据集
       "dataloader_num_workers": 8,      // 数据加载器的工作线程数
       "dataloader_batch_size": 32       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
@@ -35,8 +40,26 @@
     "test": {
       "name": "test_dataset",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
-      "dataroot_H": "testsets/spectH",  // 测试数据集H的路径
-      "dataroot_L": "testsets/spectL_4x"              // 测试数据集L的路径
+      "dataroot_H": "SPECTdatasets/spectH_XCAT_ideal_1x",  // 测试数据集H的路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 测试数据集L的路径
+      "start_index": 96,
+      "end_index": 100
+    },
+    "val_1": {
+      "name": "val_dataset_1",           // 仅作为名称
+      "dataset_type": "spect",          // SPECT专用dataset
+      "dataroot_H": "SPECTdatasets/spectH_clinical",  // 验证数据集1的H路径
+      "dataroot_L": "SPECTdatasets/spectL_clinical_binomial_8x",              // 验证数据集1的L路径
+      "start_index": 0,
+      "end_index": 5
+    },
+    "val_2": {
+      "name": "val_dataset_2",           // 仅作为名称
+      "dataset_type": "spect",          // SPECT专用dataset
+      "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x",  // 验证数据集2的H路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 验证数据集2的L路径
+      "start_index": 96,
+      "end_index": 100
     }
   },
   //-----------------网络设置---------------------
@@ -60,23 +83,25 @@
     "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
     "G_charbonnier_eps": 1e-9,          // Charbonnier损失的epsilon参数
+   
+    "E_decay": 0.999,                             // 指数滑动平均，设为0表示不使用，默认0.999
 
     "G_optimizer_type": "adam",         // 优化器类型："adam"
-    "G_optimizer_lr": 1e-5,             // 学习率
+    "G_optimizer_lr": 1e-4,             // 学习率
     "G_optimizer_wd": 0,                // 权重衰减，默认0
     "G_optimizer_clipgrad": null,       // 梯度裁剪
     "G_optimizer_reuse": true,          // 是否重用优化器状态（从之前的检查点加载）
 
     "G_scheduler_type": "MultiStepLR",  // 学习率调度器类型："MultiStepLR" | "CosineAnnealingLR"
-    "G_scheduler_milestones_percent": [0.25, 0.50, 0.75, 0.90], // 新的：学习率下降的里程碑（占总迭代次数的百分比）
+    "G_scheduler_milestones_percent": [0.4, 0.6, 0.8, 0.9], // 新的：学习率下降的里程碑（占总迭代次数的百分比）
     "G_scheduler_gamma": 0.5,           // 学习率衰减系数，每到达一个里程碑，学习率乘以该系数
 
     "G_regularizer_orthstep": null,     // 正交正则化步长，用于控制网络权重正交性，防止过拟合，null表示不使用
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
     "checkpoint_print": 10,             // 打印损失间隔
-    "checkpoint_test": 200,             // 验证指标间隔
-    "checkpoint_save": 200,            // 保存模型间隔
-    "max_epoch": 100                    // 最大训练轮次 (epoch)
+    "checkpoint_test": 1000,             // 验证指标间隔
+    "checkpoint_save": 1000,            // 保存模型间隔
+    "max_epoch": 10000                    // 最大训练轮次 (epoch)
   }
 }

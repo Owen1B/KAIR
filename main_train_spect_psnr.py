@@ -255,7 +255,7 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
             # -------------------------------
             if current_step % opt['train']['checkpoint_test'] == 0 and opt['rank'] == 0:
                 # 测试集评估
-                metrics_avg, visuals_list, image_names = model.evaluate_metrics(test_loader)
+                metrics_avg, visuals_list, image_names = model.evaluate_metrics(test_loader, add_poisson_noise=False)
                 message_global = '<轮次:{:3d}, 迭代:{:6,d}>, global测试结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
                     epoch,
                     current_step,
@@ -283,10 +283,41 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                 }
                 wandb.log({'iteration': current_step, **metrics_dict})
 
+                # 测试集评估 (带泊松噪声)
+                metrics_avg_poisson, visuals_list_poisson, image_names_poisson = model.evaluate_metrics(test_loader, add_poisson_noise=True)
+                message_global_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, global测试结果(泊松): PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                    epoch,
+                    current_step,
+                    metrics_avg_poisson['psnr_global'],
+                    metrics_avg_poisson['ssim_global'],
+                    metrics_avg_poisson['lpips_global']
+                )
+                message_local_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, local测试结果(泊松): PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                    epoch,
+                    current_step,
+                    metrics_avg_poisson['psnr_local'],
+                    metrics_avg_poisson['ssim_local'],
+                    metrics_avg_poisson['lpips_local']
+                )
+                logger.info(message_global_poisson)
+                logger.info(message_local_poisson)
+                metrics_dict_poisson = {
+                    'test_poisson/psnr_global': metrics_avg_poisson['psnr_global'],
+                    'test_poisson/ssim_global': metrics_avg_poisson['ssim_global'],
+                    'test_poisson/lpips_global': metrics_avg_poisson['lpips_global'],
+                    'test_poisson/psnr_local': metrics_avg_poisson['psnr_local'],
+                    'test_poisson/ssim_local': metrics_avg_poisson['ssim_local'],
+                    'test_poisson/lpips_local': metrics_avg_poisson['lpips_local'],
+                    'test_poisson/loss': metrics_avg_poisson['loss']
+                }
+                wandb.log({'iteration': current_step, **metrics_dict_poisson})
+
+
                 # 验证集评估（如果存在）
                 if 'val_loaders' in locals():
                     for val_name, val_loader in val_loaders.items():
-                        val_metrics_avg, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader)
+                        # 不加泊松噪声
+                        val_metrics_avg, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader, add_poisson_noise=False)
                         val_message_global = '<轮次:{:3d}, 迭代:{:6,d}>, {} global验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
                             epoch,
                             current_step,
@@ -315,10 +346,41 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                             f'{val_name}/loss': val_metrics_avg['loss']
                         }
                         wandb.log({'iteration': current_step, **val_metrics_dict})
+
+                        # 加泊松噪声
+                        val_metrics_avg_poisson, val_visuals_list_poisson, val_image_names_poisson = model.evaluate_metrics(val_loader, add_poisson_noise=True)
+                        val_message_global_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, {}_poisson global验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                            epoch,
+                            current_step,
+                            val_name,
+                            val_metrics_avg_poisson['psnr_global'],
+                            val_metrics_avg_poisson['ssim_global'],
+                            val_metrics_avg_poisson['lpips_global']
+                        )
+                        val_message_local_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, {}_poisson local验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                            epoch,
+                            current_step,
+                            val_name,
+                            val_metrics_avg_poisson['psnr_local'],
+                            val_metrics_avg_poisson['ssim_local'],
+                            val_metrics_avg_poisson['lpips_local']
+                        )
+                        logger.info(val_message_global_poisson)
+                        logger.info(val_message_local_poisson)
+                        val_metrics_dict_poisson = {
+                            f'{val_name}_poisson/psnr_global': val_metrics_avg_poisson['psnr_global'],
+                            f'{val_name}_poisson/ssim_global': val_metrics_avg_poisson['ssim_global'],
+                            f'{val_name}_poisson/lpips_global': val_metrics_avg_poisson['lpips_global'],
+                            f'{val_name}_poisson/psnr_local': val_metrics_avg_poisson['psnr_local'],
+                            f'{val_name}_poisson/ssim_local': val_metrics_avg_poisson['ssim_local'],
+                            f'{val_name}_poisson/lpips_local': val_metrics_avg_poisson['lpips_local'],
+                            f'{val_name}_poisson/loss': val_metrics_avg_poisson['loss']
+                        }
+                        wandb.log({'iteration': current_step, **val_metrics_dict_poisson})
                 
-                # 最佳模型的判断基于全局PSNR和全局SSIM (与之前行为保持一致)
-                current_psnr_global = metrics_avg['psnr_global']
-                current_ssim_global = metrics_avg['ssim_global']
+                # 最佳模型的判断基于全局PSNR和全局SSIM (与之前行为保持一致，不使用泊松噪声后的结果判断最佳模型)
+                current_psnr_global = metrics_avg['psnr_global'] # 使用未加噪声的结果进行判断
+                current_ssim_global = metrics_avg['ssim_global'] # 使用未加噪声的结果进行判断
 
                 save_images = False
                 
@@ -338,13 +400,22 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                 # 最佳模型更新时保存一次图像
                 if save_images:
                     for img_array, img_name in zip(visuals_list, image_names):
-                        wandb.log({f"images/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                        wandb.log({f"images_test/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                    # 同时保存带泊松噪声的测试集图像 (如果需要)
+                    for img_array, img_name in zip(visuals_list_poisson, image_names_poisson):
+                        wandb.log({f"images_test_poisson/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+
                     # 保存验证集图像
                     if 'val_loaders' in locals():
                         for val_name, val_loader in val_loaders.items():
-                            _, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader)
-                            for img_array, img_name in zip(val_visuals_list, val_image_names):
+                            # 不加噪声的验证集图像
+                            _, val_visuals_list_orig, val_image_names_orig = model.evaluate_metrics(val_loader, add_poisson_noise=False)
+                            for img_array, img_name in zip(val_visuals_list_orig, val_image_names_orig):
                                 wandb.log({f"images_{val_name}/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                            # 加噪声的验证集图像
+                            _, val_visuals_list_p, val_image_names_p = model.evaluate_metrics(val_loader, add_poisson_noise=True)
+                            for img_array, img_name in zip(val_visuals_list_p, val_image_names_p):
+                                wandb.log({f"images_{val_name}_poisson/{img_name}": wandb.Image(img_array), 'iteration': current_step})
 
             # -------------------------------
             # 6) 定期保存模型

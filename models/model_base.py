@@ -272,10 +272,11 @@ class ModelBase():
     # ----------------------------------------
     # evaluate metrics and generate visuals
     # ----------------------------------------
-    def evaluate_metrics(self, test_loader):
+    def evaluate_metrics(self, test_loader, add_poisson_noise=False):
         """评估模型性能,计算PSNR、SSIM、LPIPS指标,并保存可视化结果
         Args:
             test_loader: 测试数据加载器
+            add_poisson_noise: 是否对模型输出E添加泊松噪声
         Returns:
             metrics_avg: 包含平均指标的字典
             {
@@ -342,6 +343,11 @@ class ModelBase():
             count += 1
             image_name = image_names[idx]
             
+            # 如果需要，对E_img_norm添加泊松噪声
+            if add_poisson_noise:
+                E_img_norm_for_poisson = np.maximum(0, E_img_norm) # 确保均值非负
+                E_img_norm = np.random.poisson(E_img_norm_for_poisson).astype(np.float32)
+            
             # --- 全局归一化处理 (用于图像保存和全局指标) ---
             imgs_255_global = {}
             for key, img in zip(['L', 'E', 'H'], [L_img_norm, E_img_norm, H_img_norm]):
@@ -398,7 +404,7 @@ class ModelBase():
             
             titles = {
                 'L': 'Input (L)',
-                'E': 'Estimated (E)',
+                'E': f"Estimated (E){'_poisson' if add_poisson_noise else ''}",
                 'H': 'Ground Truth (H)'
             }
             
@@ -407,8 +413,35 @@ class ModelBase():
             vmax_vis = max_val_local
             vmin_vis = min_val_local
 
-            # 添加大标题显示PSNR和SSIM
-            plt.suptitle(f'PSNR: {psnr_local:.2f}dB, SSIM: {ssim_local:.4f}', fontsize=16)
+            # 为图像标题计算并显示该图像的平均局部PSNR和SSIM
+            psnr_local_single_img_sum = 0.0
+            ssim_local_single_img_sum = 0.0
+            num_channels_single_img = L_img_norm.shape[2]
+
+            if num_channels_single_img > 0:
+                for ch_for_title in range(num_channels_single_img):
+                    # 先clip到[0, max_val_local]
+                    E_ch_clipped_title = np.clip(E_img_norm[:,:,ch_for_title], 0, max_val_local)
+                    H_ch_clipped_title = np.clip(H_img_norm[:,:,ch_for_title], 0, max_val_local)
+                    
+                    # 归一化到[0,255]
+                    E_ch_local_title = (E_ch_clipped_title / max_val_local * 255).astype(np.uint8) if max_val_local > 0 else np.zeros_like(E_ch_clipped_title).astype(np.uint8)
+                    H_ch_local_title = (H_ch_clipped_title / max_val_local * 255).astype(np.uint8) if max_val_local > 0 else np.zeros_like(H_ch_clipped_title).astype(np.uint8)
+                    
+                    # 扩展为3通道RGB图像以供度量函数使用
+                    E_rgb_local_title = np.stack([E_ch_local_title]*3, axis=2)
+                    H_rgb_local_title = np.stack([H_ch_local_title]*3, axis=2)
+                    
+                    psnr_local_single_img_sum += util.calculate_psnr(E_rgb_local_title, H_rgb_local_title)
+                    ssim_local_single_img_sum += util.calculate_ssim(E_rgb_local_title, H_rgb_local_title)
+                
+                avg_psnr_local_single_img = psnr_local_single_img_sum / num_channels_single_img
+                avg_ssim_local_single_img = ssim_local_single_img_sum / num_channels_single_img
+            else:
+                avg_psnr_local_single_img = 0.0
+                avg_ssim_local_single_img = 0.0
+            
+            plt.suptitle(f'PSNR(local): {avg_psnr_local_single_img:.2f}dB, SSIM(local): {avg_ssim_local_single_img:.4f}', fontsize=16)
 
             for row, view in enumerate(['Anterior', 'Posterior']):
                 for col, (key, title) in enumerate(titles.items()):
