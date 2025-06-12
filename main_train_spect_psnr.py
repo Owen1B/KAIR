@@ -4,6 +4,9 @@ import argparse
 import random
 import numpy as np
 import logging
+import csv
+import matplotlib.pyplot as plt
+import shutil
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch
@@ -28,6 +31,77 @@ from models.select_model import define_Model
 # github: https://github.com/Owen1B
 '''
 
+def _plot_scatter(x_data, y_data, c_data, x_label, y_label, c_label, title, plot_path):
+    """Helper function to create a scatter plot."""
+    fig, ax = plt.subplots(figsize=(8, 8))
+    scatter = ax.scatter(x_data, y_data, alpha=0.7, c=c_data, cmap='viridis')
+    
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label(c_label)
+
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.grid(True)
+    fig.tight_layout()
+    fig.savefig(plot_path)
+    plt.close(fig)
+    return plot_path
+
+def log_and_plot_correlations(log_dir, current_step, test_lpips, test_ssim, test_psnr, val_lpips):
+    """记录关键指标到CSV并绘制相关性散点图"""
+    csv_path = os.path.join(log_dir, 'metrics_correlation.csv')
+
+    # 1. 记录当前数据到CSV
+    file_exists = os.path.isfile(csv_path)
+    with open(csv_path, 'a', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        if not file_exists:
+            writer.writerow(['step', 'test_lpips_local', 'test_ssim_local', 'test_psnr_local', 'val_2_poisson_lpips_local'])
+        writer.writerow([current_step, test_lpips, test_ssim, test_psnr, val_lpips])
+
+    # 2. 读取所有历史数据
+    steps, test_lpips_data, test_ssim_data, test_psnr_data, val_lpips_data = [], [], [], [], []
+    with open(csv_path, 'r') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)  # 跳过表头
+        for row in reader:
+            steps.append(int(row[0]))
+            test_lpips_data.append(float(row[1]))
+            test_ssim_data.append(float(row[2]))
+            test_psnr_data.append(float(row[3]))
+            val_lpips_data.append(float(row[4]))
+            
+    # 3. 绘制并记录三个散点图
+    plots = {
+        'LPIPS_Correlation': {
+            'x_data': test_lpips_data, 'y_data': val_lpips_data,
+            'x_label': 'test/lpips_local (no noise)', 'y_label': 'val_2_poisson/lpips_local (with noise)',
+            'path': os.path.join(log_dir, 'correlation_lpips.png')
+        },
+        'SSIM_vs_LPIPS_Correlation': {
+            'x_data': test_ssim_data, 'y_data': val_lpips_data,
+            'x_label': 'test/ssim_local (no noise)', 'y_label': 'val_2_poisson/lpips_local (with noise)',
+            'path': os.path.join(log_dir, 'correlation_ssim_vs_lpips.png')
+        },
+        'PSNR_vs_LPIPS_Correlation': {
+            'x_data': test_psnr_data, 'y_data': val_lpips_data,
+            'x_label': 'test/psnr_local (no noise)', 'y_label': 'val_2_poisson/lpips_local (with noise)',
+            'path': os.path.join(log_dir, 'correlation_psnr_vs_lpips.png')
+        }
+    }
+    
+    wandb_images = {}
+    for title, data in plots.items():
+        plot_path = _plot_scatter(
+            x_data=data['x_data'], y_data=data['y_data'], c_data=steps,
+            x_label=data['x_label'], y_label=data['y_label'], c_label='Iteration Step',
+            title=title.replace('_', ' '), plot_path=data['path']
+        )
+        wandb_images[f'correlation_plots/{title}'] = wandb.Image(plot_path)
+
+    wandb.log({**wandb_images, 'iteration': current_step})
+
 
 def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
 
@@ -42,9 +116,31 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
     parser.add_argument('--launcher', default='pytorch', help='job launcher')
     parser.add_argument('--local_rank', type=int, default=0)
     parser.add_argument('--dist', default=False)
+    parser.add_argument('--restart', action='store_true', help='Remove existing experiment directory and restart training')
 
     opt = option.parse(parser.parse_args().opt, is_train=True)
     opt['dist'] = parser.parse_args().dist
+    restart = parser.parse_args().restart
+
+    # ----------------------------------------
+    # 处理重新训练选项
+    # ----------------------------------------
+    if restart:
+        # 获取任务目录路径，应该删除的是整个任务目录而不是根目录
+        if 'path' in opt and 'task' in opt['path']:
+            # 任务目录就是实验的完整目录，包含models、images、options等子目录
+            task_path = opt['path']['task']
+            
+            if os.path.exists(task_path):
+                print(f'重新训练模式：删除现有任务目录 {task_path}')
+                try:
+                    shutil.rmtree(task_path)
+                    print(f'成功删除目录: {task_path}')
+                except Exception as e:
+                    print(f'删除目录时出错: {e}')
+                    print('继续训练...')
+            else:
+                print(f'任务目录 {task_path} 不存在，继续训练...')
 
     # ----------------------------------------
     # 分布式设置
@@ -72,7 +168,6 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
     opt['path']['pretrained_schedulerG'] = init_path_schedulerG
 
     current_step = max(init_iter_G, init_iter_E, init_iter_optimizerG, init_iter_schedulerG)
-
 
     # --<--<--<--<--<--<--<--<--<--<--<--<--<-
 
@@ -254,18 +349,42 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
             # 5) 评估模型并保存最佳模型及图像
             # -------------------------------
             if current_step % opt['train']['checkpoint_test'] == 0 and opt['rank'] == 0:
+                # 定义变量以存储用于CSV记录的指标
+                test_lpips_local_for_csv = None
+                test_ssim_local_for_csv = None
+                test_psnr_local_for_csv = None
+                val2_poisson_lpips_local_for_csv = None
+
+                # 清理训练时GPU上的数据，为评估腾出空间
+                if hasattr(model, 'L'):
+                    del model.L
+                if hasattr(model, 'H'):
+                    del model.H
+                if hasattr(model, 'E'): # model.E 是前向传播的结果
+                    del model.E
+                torch.cuda.empty_cache() # 请求PyTorch释放未使用的缓存显存
+
+                # 统一日志格式
+                msg_format_basic = '<轮次:{:3d}, 迭代:{:6,d}>, {:<20s}: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'
+                msg_format_poissonll = msg_format_basic + ', PoissonLL:{:<.4f}'
+
                 # 测试集评估
                 metrics_avg, visuals_list, image_names = model.evaluate_metrics(test_loader, add_poisson_noise=False)
-                message_global = '<轮次:{:3d}, 迭代:{:6,d}>, global测试结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                test_lpips_local_for_csv = metrics_avg['lpips_local'] # 获取test/lpips_local
+                test_ssim_local_for_csv = metrics_avg['ssim_local']
+                test_psnr_local_for_csv = metrics_avg['psnr_local']
+                message_global = msg_format_basic.format(
                     epoch,
                     current_step,
+                    'test_global',
                     metrics_avg['psnr_global'],
                     metrics_avg['ssim_global'],
                     metrics_avg['lpips_global']
                 )
-                message_local = '<轮次:{:3d}, 迭代:{:6,d}>, local测试结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                message_local = msg_format_basic.format(
                     epoch,
                     current_step,
+                    'test_local',
                     metrics_avg['psnr_local'],
                     metrics_avg['ssim_local'],
                     metrics_avg['lpips_local']
@@ -285,16 +404,18 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
 
                 # 测试集评估 (带泊松噪声)
                 metrics_avg_poisson, visuals_list_poisson, image_names_poisson = model.evaluate_metrics(test_loader, add_poisson_noise=True)
-                message_global_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, global测试结果(泊松): PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                message_global_poisson = msg_format_basic.format(
                     epoch,
                     current_step,
+                    'test_poisson_global',
                     metrics_avg_poisson['psnr_global'],
                     metrics_avg_poisson['ssim_global'],
                     metrics_avg_poisson['lpips_global']
                 )
-                message_local_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, local测试结果(泊松): PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                message_local_poisson = msg_format_basic.format(
                     epoch,
                     current_step,
+                    'test_poisson_local',
                     metrics_avg_poisson['psnr_local'],
                     metrics_avg_poisson['ssim_local'],
                     metrics_avg_poisson['lpips_local']
@@ -318,18 +439,19 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                     for val_name, val_loader in val_loaders.items():
                         # 不加泊松噪声
                         val_metrics_avg, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader, add_poisson_noise=False)
-                        val_message_global = '<轮次:{:3d}, 迭代:{:6,d}>, {} global验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                        val_message_global = msg_format_poissonll.format(
                             epoch,
                             current_step,
-                            val_name,
+                            f'{val_name}_global',
                             val_metrics_avg['psnr_global'],
                             val_metrics_avg['ssim_global'],
-                            val_metrics_avg['lpips_global']
+                            val_metrics_avg['lpips_global'],
+                            val_metrics_avg['poisson_ll']
                         )
-                        val_message_local = '<轮次:{:3d}, 迭代:{:6,d}>, {} local验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                        val_message_local = msg_format_basic.format(
                             epoch,
                             current_step,
-                            val_name,
+                            f'{val_name}_local',
                             val_metrics_avg['psnr_local'],
                             val_metrics_avg['ssim_local'],
                             val_metrics_avg['lpips_local']
@@ -343,24 +465,31 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                             f'{val_name}/psnr_local': val_metrics_avg['psnr_local'],
                             f'{val_name}/ssim_local': val_metrics_avg['ssim_local'],
                             f'{val_name}/lpips_local': val_metrics_avg['lpips_local'],
-                            f'{val_name}/loss': val_metrics_avg['loss']
+                            f'{val_name}/loss': val_metrics_avg['loss'],
+                            f'{val_name}/poisson_ll': val_metrics_avg['poisson_ll']
                         }
                         wandb.log({'iteration': current_step, **val_metrics_dict})
 
                         # 加泊松噪声
-                        val_metrics_avg_poisson, val_visuals_list_poisson, val_image_names_poisson = model.evaluate_metrics(val_loader, add_poisson_noise=True)
-                        val_message_global_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, {}_poisson global验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                        lpips_repeats = 1
+                        if val_name == 'val_2':
+                            lpips_repeats = 100
+                        val_metrics_avg_poisson, val_visuals_list_poisson, val_image_names_poisson = model.evaluate_metrics(val_loader, add_poisson_noise=True, lpips_local_repeat_n=lpips_repeats)
+                        if val_name == 'val_2':
+                            val2_poisson_lpips_local_for_csv = val_metrics_avg_poisson['lpips_local'] # 获取val_2_poisson/lpips_local
+
+                        val_message_global_poisson = msg_format_basic.format(
                             epoch,
                             current_step,
-                            val_name,
+                            f'{val_name}_poisson_global',
                             val_metrics_avg_poisson['psnr_global'],
                             val_metrics_avg_poisson['ssim_global'],
                             val_metrics_avg_poisson['lpips_global']
                         )
-                        val_message_local_poisson = '<轮次:{:3d}, 迭代:{:6,d}>, {}_poisson local验证结果: PSNR:{:<.2f}dB, SSIM:{:<.4f}, LPIPS:{:<.4f}'.format(
+                        val_message_local_poisson = msg_format_basic.format(
                             epoch,
                             current_step,
-                            val_name,
+                            f'{val_name}_poisson_local',
                             val_metrics_avg_poisson['psnr_local'],
                             val_metrics_avg_poisson['ssim_local'],
                             val_metrics_avg_poisson['lpips_local']
@@ -377,6 +506,16 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                             f'{val_name}_poisson/loss': val_metrics_avg_poisson['loss']
                         }
                         wandb.log({'iteration': current_step, **val_metrics_dict_poisson})
+                # 在所有评估完成后，检查是否需要记录CSV和绘图
+                if test_lpips_local_for_csv is not None and val2_poisson_lpips_local_for_csv is not None:
+                    log_and_plot_correlations(
+                        log_dir=opt['path']['log'], 
+                        current_step=current_step,
+                        test_lpips=test_lpips_local_for_csv, 
+                        test_ssim=test_ssim_local_for_csv,
+                        test_psnr=test_psnr_local_for_csv,
+                        val_lpips=val2_poisson_lpips_local_for_csv
+                    )
                 
                 # 最佳模型的判断基于全局PSNR和全局SSIM (与之前行为保持一致，不使用泊松噪声后的结果判断最佳模型)
                 current_psnr_global = metrics_avg['psnr_global'] # 使用未加噪声的结果进行判断
@@ -395,7 +534,6 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                     model.save_best_network(model.netG, 'G', 'ssim_global', current_step)
                     logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已保存最佳SSIM_global模型: {:.4f}'.format(epoch, current_step, best_ssim))
                     save_images = True
-                save_images = True
 
                 # 最佳模型更新时保存一次图像
                 if save_images:

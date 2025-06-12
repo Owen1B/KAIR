@@ -1,11 +1,11 @@
 {
   //-----------------全局设置---------------------
-  "task": "rrdbnet_psnr_8x_linear_96*8数据集",  // 名称
+  "task": "rrdbnet_psnr_4x_linear_96数据集",  // 名称
   "model": "plain",                     // 模型类型："plain"｜"gan"
   "gpu_ids": [0],                       // 使用GPU ID
   "scale": 1,                           // 放大倍数，SPECT降噪设为1即可
   "n_channels": 2,                      // 输入通道数，2表示前后位
-  "speed": 8,                           // 快速扫描倍数，4表示25%剂量扫描，用于生成低计数图像
+  "speed": 4,                           // 快速扫描倍数，4表示25%剂量扫描，用于生成低计数图像
   "normalization": {
     "type": "linear",                 // 归一化方式："linear" | "anscombe" | "log"
     "max_pixel": 150
@@ -18,7 +18,7 @@
   //-----------------wandb设置---------------------
   "wandb" : {
     "entity":"owen1b_",
-    "project": "bsd2",
+    "project": "bsd3",
     "group": "rrdbnet"
   },
   //-----------------数据集设置---------------------
@@ -27,9 +27,9 @@
       "name": "train_dataset",          // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x", // 训练数据集H的路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x", // 训练数据集L的路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_4x", // 训练数据集L的路径
       "start_index": 0,
-      "end_index": 796,
+      "end_index": 96,
       "H_size": 64,                    // 图像块大小：40 | 64 | 96 | 128 | 192
       "is_ideal_H": true,              // 是否为理想图
       "use_binomial_resampling": true, // 是否使用二项重采样
@@ -41,15 +41,15 @@
       "name": "test_dataset",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_XCAT_ideal_1x",  // 测试数据集H的路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 测试数据集L的路径
-      "start_index": 796,
-      "end_index": 800
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_4x",              // 测试数据集L的路径
+      "start_index": 96,
+      "end_index": 100
     },
     "val_1": {
       "name": "val_dataset_1",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_clinical",  // 验证数据集1的H路径
-      "dataroot_L": "SPECTdatasets/spectL_clinical_binomial_8x",              // 验证数据集1的L路径
+      "dataroot_L": "SPECTdatasets/spectL_clinical_binomial_4x",              // 验证数据集1的L路径
       "start_index": 0,
       "end_index": 5
     },
@@ -57,9 +57,9 @@
       "name": "val_dataset_2",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x",  // 验证数据集2的H路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 验证数据集2的L路径
-      "start_index": 796,
-      "end_index": 800
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_4x",              // 验证数据集2的L路径
+      "start_index": 96,
+      "end_index": 100
     }
   },
   //-----------------网络设置---------------------
@@ -102,8 +102,8 @@
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
     "checkpoint_print": 10,             // 打印损失间隔
-    "checkpoint_test": 5000,             // 验证指标间隔
-    "checkpoint_save": 1000,            // 保存模型间隔
-    "max_epoch": 1000                    // 最大训练轮次 (epoch)
+    "checkpoint_test": 500,             // 验证指标间隔
+    "checkpoint_save": 500,            // 保存模型间隔
+    "max_epoch": 12000                    // 最大训练轮次 (epoch)
   }
 }

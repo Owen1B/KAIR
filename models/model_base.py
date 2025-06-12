@@ -9,6 +9,8 @@ import os
 from utils import utils_image as util
 from utils import utils_spect
 from pytorch_fid import fid_score
+from tqdm import tqdm
+
 class ModelBase():
     def __init__(self, opt):
         self.opt = opt                         # opt
@@ -272,33 +274,41 @@ class ModelBase():
     # ----------------------------------------
     # evaluate metrics and generate visuals
     # ----------------------------------------
-    def evaluate_metrics(self, test_loader, add_poisson_noise=False):
+    def evaluate_metrics(self, test_loader, add_poisson_noise=False, lpips_local_repeat_n=1):
         """评估模型性能,计算PSNR、SSIM、LPIPS指标,并保存可视化结果
         Args:
             test_loader: 测试数据加载器
-            add_poisson_noise: 是否对模型输出E添加泊松噪声
+            add_poisson_noise: 是否对模型输出E添加泊松噪声。
+            lpips_local_repeat_n: 当add_poisson_noise=True时,为计算局部LPIPS指标重复采样的次数。
         Returns:
             metrics_avg: 包含平均指标的字典
-            {
-                'psnr_global': float, 'ssim_global': float, 'lpips_global': float,
-                'psnr_local': float, 'ssim_local': float, 'lpips_local': float
-            }
             visuals_list: 所有测试样本的可视化图像列表
             image_names: 所有测试样本的文件名列表
         """
         self.netG.eval()
         
-        # 初始化指标累加器
-        metrics_sum_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
-        metrics_sum_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
-        loss_sum = 0
-        count = 0
+        # 收集所有图像数据
+        all_imgs, image_names, loss_sum = self._collect_test_data(test_loader)
         
-        # 存储所有图像数据和文件名
+        # 计算全局归一化参数
+        max_val_global = self._compute_global_max(all_imgs['H'])
+        
+        # 计算指标和生成可视化
+        metrics_avg, visuals_list = self._compute_metrics_and_visuals(
+            all_imgs, image_names, max_val_global, loss_sum, 
+            add_poisson_noise, lpips_local_repeat_n
+        )
+        
+        self.netG.train()
+        return metrics_avg, visuals_list, image_names
+
+    def _collect_test_data(self, test_loader):
+        """收集测试数据"""
         all_imgs = {'L': [], 'E': [], 'H': []}
         image_names = []
+        loss_sum = 0
         
-        # 创建保存目录 (图像保存逻辑不变, 仍基于全局归一化的视觉效果)
+        # 创建保存目录
         save_dir = os.path.join(self.opt['path']['images'])
         for key in ['L', 'E', 'H']:
             os.makedirs(os.path.join(save_dir, key), exist_ok=True)
@@ -306,7 +316,7 @@ class ModelBase():
         # 设置返回路径信息
         test_loader.dataset.return_paths = True
         
-        # 遍历：收集所有图像数据
+        # 遍历收集数据
         with torch.no_grad():
             for test_data in test_loader:
                 self.feed_data(test_data)
@@ -317,159 +327,223 @@ class ModelBase():
                 loss = self.G_lossfn_weight * self.G_lossfn(self.E, self.H)
                 loss_sum += loss.item()
                 
+                # 提取文件名
                 image_name_ext = os.path.basename(test_data['L_path'][0])
                 image_name = os.path.splitext(image_name_ext)[0]
                 image_names.append(image_name)
                 
+                # 反归一化并存储图像
                 for key in ['L', 'E', 'H']:
                     img = visuals[key].cpu().float().numpy().transpose((1, 2, 0))
                     img_norm = utils_spect.denormalize_spect(
-                                img, 
-                                self.opt['datasets']['test']['normalization']['type'],
-                                self.opt['datasets']['test']['normalization']['max_pixel']
-                            )
+                        img, 
+                        self.opt['datasets']['test']['normalization']['type'],
+                        self.opt['datasets']['test']['normalization']['max_pixel']
+                    )
                     all_imgs[key].append(img_norm)
         
-        # 计算全局最大最小值 (用于全局归一化指标和图像保存)
-        all_H_values = np.concatenate([img.flatten() for img in all_imgs['H']])
-        max_val_global = np.max(all_H_values) * 1  # 设置为H最大值的110%
-        min_val_global = 0  # 固定最小值为0
+        return all_imgs, image_names, loss_sum
+
+    def _compute_global_max(self, H_imgs):
+        """计算全局最大值用于归一化"""
+        all_H_values = np.concatenate([img.flatten() for img in H_imgs])
+        return np.max(all_H_values)
+
+    def _compute_channel_metrics(self, E_img, H_img, max_val, ch):
+        """计算单个通道的指标"""
+        # Clip and normalize
+        E_ch_clip = np.clip(E_img[:,:,ch], 0, max_val)
+        H_ch_clip = np.clip(H_img[:,:,ch], 0, max_val)
         
-        # 计算每张图片的指标并生成可视化
+        if max_val > 0:
+            E_ch_255 = (E_ch_clip / max_val * 255).astype(np.uint8)
+            H_ch_255 = (H_ch_clip / max_val * 255).astype(np.uint8)
+        else:
+            E_ch_255 = np.zeros_like(E_ch_clip, dtype=np.uint8)
+            H_ch_255 = np.zeros_like(H_ch_clip, dtype=np.uint8)
+        
+        # Convert to RGB for metric calculation
+        E_rgb = np.stack([E_ch_255] * 3, axis=2)
+        H_rgb = np.stack([H_ch_255] * 3, axis=2)
+        
+        # Calculate metrics
+        psnr = util.calculate_psnr(E_rgb, H_rgb)
+        ssim = util.calculate_ssim(E_rgb, H_rgb)
+        lpips = util.calculate_lpips(E_rgb, H_rgb)
+        
+        return psnr, ssim, lpips
+
+    def _compute_metrics_for_image(self, E_img, H_img, max_val_global, max_val_local, 
+                                   add_poisson_noise, lpips_local_repeat_n):
+        """计算单张图像的所有指标"""
+        num_channels = E_img.shape[2]
+        
+        # 初始化指标累加器
+        metrics_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        metrics_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        
+        # 计算全局和局部指标（PSNR, SSIM）
+        for ch in range(num_channels):
+            # 全局指标
+            psnr_g, ssim_g, lpips_g = self._compute_channel_metrics(
+                E_img, H_img, max_val_global, ch
+            )
+            metrics_global['psnr'] += psnr_g
+            metrics_global['ssim'] += ssim_g
+            metrics_global['lpips'] += lpips_g
+            
+            # 局部指标（PSNR, SSIM）
+            psnr_l, ssim_l, _ = self._compute_channel_metrics(
+                E_img, H_img, max_val_local, ch
+            )
+            metrics_local['psnr'] += psnr_l
+            metrics_local['ssim'] += ssim_l
+        
+        # 局部LPIPS需要特殊处理
+        if add_poisson_noise:
+            # 重复采样计算局部LPIPS
+            E_img_for_poisson = np.maximum(0, E_img)
+            lpips_local_sum = 0.0
+            
+            for _ in range(lpips_local_repeat_n):
+                E_img_sampled = np.random.poisson(E_img_for_poisson).astype(np.float32)
+                for ch in range(num_channels):
+                    _, _, lpips_l = self._compute_channel_metrics(
+                        E_img_sampled, H_img, max_val_local, ch
+                    )
+                    lpips_local_sum += lpips_l
+            
+            metrics_local['lpips'] = lpips_local_sum / lpips_local_repeat_n
+        else:
+            # 直接计算局部LPIPS
+            for ch in range(num_channels):
+                _, _, lpips_l = self._compute_channel_metrics(
+                    E_img, H_img, max_val_local, ch
+                )
+                metrics_local['lpips'] += lpips_l
+        
+        return metrics_global, metrics_local
+
+    def _save_image_channels(self, img, key, image_name, max_val_global):
+        """保存图像的所有通道"""
+        save_dir = os.path.join(self.opt['path']['images'])
+        
+        # Clip and normalize
+        img_clipped = np.clip(img, 0, max_val_global)
+        if max_val_global > 0:
+            img_255 = (img_clipped / max_val_global * 255).astype(np.uint8)
+        else:
+            img_255 = np.zeros_like(img_clipped, dtype=np.uint8)
+        
+        # Save each channel as RGB
+        for ch in range(img.shape[2]):
+            gray_img = img_255[:, :, ch]
+            rgb_img = np.stack([gray_img, gray_img, gray_img], axis=2)
+            rgb_path = os.path.join(save_dir, key, f"{image_name}_ch{ch}.png")
+            util.imsave(rgb_img, rgb_path)
+
+    def _create_visualization(self, L_img, E_img, H_img, max_val_local, add_poisson_noise, metrics_local_avg):
+        """创建单张图像的可视化"""
+        fig = plt.figure(figsize=(8, 20))
+        gs = plt.GridSpec(2, 4, height_ratios=[1, 1], width_ratios=[1, 1, 1, 0.05])
+        
+        titles = {
+            'L': 'Input (L)',
+            'E': f"Estimated (E){'_poisson' if add_poisson_noise else ''}",
+            'H': 'Ground Truth (H)'
+        }
+        
+        sample_imgs = {'L': L_img, 'E': E_img, 'H': H_img}
+        vmax_vis, vmin_vis = np.max(H_img), 0
+        
+        # 使用已经计算好的局部指标
+        plt.suptitle(
+            f'PSNR(local): {metrics_local_avg["psnr"]:.2f}dB, '
+            f'SSIM(local): {metrics_local_avg["ssim"]:.4f}, '
+            f'LPIPS(local): {metrics_local_avg["lpips"]:.4f}', 
+            fontsize=16
+        )
+
+        # 绘制图像
+        for row, view in enumerate(['Anterior', 'Posterior']):
+            for col, (key, title) in enumerate(titles.items()):
+                ax = plt.subplot(gs[row, col])
+                im = ax.imshow(sample_imgs[key][:,:,row], cmap='gray', 
+                             vmin=vmin_vis, vmax=vmax_vis)
+                ax.set_title(f'{title} - {view}')
+                ax.axis('off')
+        
+        # 添加colorbar
+        cax = plt.subplot(gs[:, 3])
+        plt.colorbar(im, cax=cax)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        
+        # 转换为数组
+        fig.canvas.draw()
+        img_array = np.array(fig.canvas.renderer.buffer_rgba())
+        plt.close(fig)
+        
+        return img_array
+
+    def _compute_metrics_and_visuals(self, all_imgs, image_names, max_val_global, 
+                                   loss_sum, add_poisson_noise, lpips_local_repeat_n):
+        """计算所有指标和生成可视化"""
+        # 初始化累加器
+        metrics_sum_global = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        metrics_sum_local = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+        poisson_ll_sum = 0
+        count = 0
         visuals_list = []
         
-        for idx, imgs_original_scale in enumerate(zip(*[all_imgs[k] for k in ['L', 'E', 'H']])):
-            L_img_norm, E_img_norm, H_img_norm = imgs_original_scale
+        for idx, (L_img, E_img_clean, H_img) in enumerate(
+            zip(all_imgs['L'], all_imgs['E'], all_imgs['H'])
+        ):
             count += 1
             image_name = image_names[idx]
+            max_val_local = np.max(H_img)
             
-            # 如果需要，对E_img_norm添加泊松噪声
+            # 处理泊松噪声
             if add_poisson_noise:
-                E_img_norm_for_poisson = np.maximum(0, E_img_norm) # 确保均值非负
-                E_img_norm = np.random.poisson(E_img_norm_for_poisson).astype(np.float32)
+                E_img_for_poisson = np.maximum(0, E_img_clean)
+                E_img = np.random.poisson(E_img_for_poisson).astype(np.float32)
+            else:
+                E_img = E_img_clean
+                poisson_ll_sum += util.pll(E_img, H_img)
             
-            # --- 全局归一化处理 (用于图像保存和全局指标) ---
-            imgs_255_global = {}
-            for key, img in zip(['L', 'E', 'H'], [L_img_norm, E_img_norm, H_img_norm]):
-                # 先clip到[0, max_val_global]
-                img_clipped = np.clip(img, 0, max_val_global)
-                # 归一化到[0,255]
-                img_255 = (img_clipped / max_val_global * 255).astype(np.uint8)
-                imgs_255_global[key] = img_255
-                
-                # 保存每个通道为RGB图
-                for ch in range(img.shape[2]):
-                    gray_img = img_255[:, :, ch]
-                    rgb_img = np.stack([gray_img, gray_img, gray_img], axis=2)
-                    rgb_path = os.path.join(save_dir, key, f"{image_name}_ch{ch}.png")
-                    util.imsave(rgb_img, rgb_path)
+            # 计算指标
+            metrics_global, metrics_local = self._compute_metrics_for_image(
+                E_img, H_img, max_val_global, max_val_local, 
+                add_poisson_noise, lpips_local_repeat_n
+            )
             
-            # 从保存的图像中读取并计算全局指标
-            for ch in range(L_img_norm.shape[2]):
-                H_rgb_global_saved = util.imread_uint(os.path.join(save_dir, 'H', f"{image_name}_ch{ch}.png"), n_channels=3)
-                E_rgb_global_saved = util.imread_uint(os.path.join(save_dir, 'E', f"{image_name}_ch{ch}.png"), n_channels=3)
-                psnr_global = util.calculate_psnr(E_rgb_global_saved, H_rgb_global_saved)
-                ssim_global = util.calculate_ssim(E_rgb_global_saved, H_rgb_global_saved)
-                lpips_global = util.calculate_lpips(E_rgb_global_saved, H_rgb_global_saved)
-                metrics_sum_global['psnr'] += psnr_global
-                metrics_sum_global['ssim'] += ssim_global
-                metrics_sum_global['lpips'] += lpips_global
-
-            # --- 局部/自适应归一化处理 (仅用于局部指标计算) ---
-            max_val_local = np.max(H_img_norm) * 1  # 设置为当前H最大值的110%
-            min_val_local = 0  # 固定最小值为0
+            # 累加指标
+            for key in metrics_sum_global:
+                metrics_sum_global[key] += metrics_global[key]
+                metrics_sum_local[key] += metrics_local[key]
             
-            for ch in range(L_img_norm.shape[2]):
-                # 先clip到[0, max_val_local]
-                E_ch_clipped = np.clip(E_img_norm[:,:,ch], 0, max_val_local)
-                H_ch_clipped = np.clip(H_img_norm[:,:,ch], 0, max_val_local)
-                
-                # 归一化到[0,255]
-                E_ch_local = (E_ch_clipped / max_val_local * 255).astype(np.uint8)
-                H_ch_local = (H_ch_clipped / max_val_local * 255).astype(np.uint8)
-                
-                # 扩展为3通道RGB图像以供度量函数使用
-                E_rgb_local = np.stack([E_ch_local, E_ch_local, E_ch_local], axis=2)
-                H_rgb_local = np.stack([H_ch_local, H_ch_local, H_ch_local], axis=2)
-                psnr_local = util.calculate_psnr(E_rgb_local, H_rgb_local)
-                ssim_local = util.calculate_ssim(E_rgb_local, H_rgb_local)
-                lpips_local = util.calculate_lpips(E_rgb_local, H_rgb_local)
-                metrics_sum_local['psnr'] += psnr_local
-                metrics_sum_local['ssim'] += ssim_local
-                metrics_sum_local['lpips'] += lpips_local
-
-            # 为每个样本创建可视化图像 (基于全局归一化的图像)
-            fig = plt.figure(figsize=(8, 20))
-            gs = plt.GridSpec(2, 4, height_ratios=[1, 1], width_ratios=[1, 1, 1, 0.05])
+            # 保存图像
+            for key, img in zip(['L', 'E', 'H'], [L_img, E_img, H_img]):
+                self._save_image_channels(img, key, image_name, max_val_global)
             
-            titles = {
-                'L': 'Input (L)',
-                'E': f"Estimated (E){'_poisson' if add_poisson_noise else ''}",
-                'H': 'Ground Truth (H)'
+            # 计算当前图像的平均局部指标用于显示
+            num_channels = E_img.shape[2]
+            metrics_local_avg = {
+                'psnr': metrics_local['psnr'] / num_channels if num_channels > 0 else 0,
+                'ssim': metrics_local['ssim'] / num_channels if num_channels > 0 else 0,
+                'lpips': metrics_local['lpips'] / num_channels if num_channels > 0 else 0
             }
             
-            sample_imgs_for_vis = {'L': L_img_norm, 'E': E_img_norm, 'H': H_img_norm}
-            # 可视化时使用局部的min/max
-            vmax_vis = max_val_local
-            vmin_vis = min_val_local
-
-            # 为图像标题计算并显示该图像的平均局部PSNR和SSIM
-            psnr_local_single_img_sum = 0.0
-            ssim_local_single_img_sum = 0.0
-            num_channels_single_img = L_img_norm.shape[2]
-
-            if num_channels_single_img > 0:
-                for ch_for_title in range(num_channels_single_img):
-                    # 先clip到[0, max_val_local]
-                    E_ch_clipped_title = np.clip(E_img_norm[:,:,ch_for_title], 0, max_val_local)
-                    H_ch_clipped_title = np.clip(H_img_norm[:,:,ch_for_title], 0, max_val_local)
-                    
-                    # 归一化到[0,255]
-                    E_ch_local_title = (E_ch_clipped_title / max_val_local * 255).astype(np.uint8) if max_val_local > 0 else np.zeros_like(E_ch_clipped_title).astype(np.uint8)
-                    H_ch_local_title = (H_ch_clipped_title / max_val_local * 255).astype(np.uint8) if max_val_local > 0 else np.zeros_like(H_ch_clipped_title).astype(np.uint8)
-                    
-                    # 扩展为3通道RGB图像以供度量函数使用
-                    E_rgb_local_title = np.stack([E_ch_local_title]*3, axis=2)
-                    H_rgb_local_title = np.stack([H_ch_local_title]*3, axis=2)
-                    
-                    psnr_local_single_img_sum += util.calculate_psnr(E_rgb_local_title, H_rgb_local_title)
-                    ssim_local_single_img_sum += util.calculate_ssim(E_rgb_local_title, H_rgb_local_title)
-                
-                avg_psnr_local_single_img = psnr_local_single_img_sum / num_channels_single_img
-                avg_ssim_local_single_img = ssim_local_single_img_sum / num_channels_single_img
-            else:
-                avg_psnr_local_single_img = 0.0
-                avg_ssim_local_single_img = 0.0
-            
-            plt.suptitle(f'PSNR(local): {avg_psnr_local_single_img:.2f}dB, SSIM(local): {avg_ssim_local_single_img:.4f}', fontsize=16)
-
-            for row, view in enumerate(['Anterior', 'Posterior']):
-                for col, (key, title) in enumerate(titles.items()):
-                    ax = plt.subplot(gs[row, col])
-                    # 使用原始图像配合局部的min_val_local, max_val_local进行显示
-                    im = ax.imshow(sample_imgs_for_vis[key][:,:,row], cmap='gray', vmin=vmin_vis, vmax=vmax_vis)
-                    ax.set_title(f'{title} - {view}')
-                    ax.axis('off')
-            
-            cax = plt.subplot(gs[:, 3])
-            plt.colorbar(im, cax=cax) # colorbar 应该对应imshow的im对象
-            
-            plt.tight_layout(rect=[0, 0, 1, 0.95])  # 为顶部标题留出空间
-            
-            fig.canvas.draw()
-            img_array = np.array(fig.canvas.renderer.buffer_rgba())
-            visuals_list.append(img_array)
-            plt.close(fig)
-        
-        # FID计算逻辑保持不变 (如果启用)
-        # # FID计算需要从文件夹路径计算
-        # fid_value = fid_score.calculate_fid_given_paths([os.path.join(save_dir, 'H'), os.path.join(save_dir, 'E')], 
-        #                                                 batch_size=50, device=self.device, dims=2048)
-        # metrics_sum['fid'] = fid_value # 需要决定fid是全局还是局部，或者独立
+            # 创建可视化
+            visual = self._create_visualization(
+                L_img, E_img, H_img, max_val_local, add_poisson_noise, metrics_local_avg
+            )
+            visuals_list.append(visual)
         
         # 计算平均值
-        total_channels = count * L_img_norm.shape[2] if count > 0 and L_img_norm.ndim == 3 else count # Handle cases where L_img_norm might not have channels dim if issues
-        if total_channels == 0: # Avoid division by zero if no valid data processed
+        total_channels = count * L_img.shape[2] if count > 0 else 0
+        
+        if total_channels == 0:
             metrics_avg = {
                 'psnr_global': 0, 'ssim_global': 0, 'lpips_global': 0,
                 'psnr_local': 0, 'ssim_local': 0, 'lpips_local': 0,
@@ -484,8 +558,9 @@ class ModelBase():
                 'ssim_local': metrics_sum_local['ssim'] / total_channels,
                 'lpips_local': metrics_sum_local['lpips'] / total_channels,
                 'loss': loss_sum / count,
-                # 'fid': metrics_sum['fid'] # FID已经是一个整体值
             }
         
-        self.netG.train()
-        return metrics_avg, visuals_list, image_names
+        if not add_poisson_noise:
+            metrics_avg['poisson_ll'] = poisson_ll_sum / count if count > 0 else 0
+        
+        return metrics_avg, visuals_list

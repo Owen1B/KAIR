@@ -1,13 +1,13 @@
 {
   //-----------------全局设置---------------------
-  "task": "rrdbnet_psnr_8x_linear_96数据集_96*96",  // 名称
+  "task": "rrdbnet_psnr_4x_anscombe_96数据集_targetbm3d",  // 名称
   "model": "plain",                     // 模型类型："plain"｜"gan"
-  "gpu_ids": [4],                       // 使用GPU ID
+  "gpu_ids": [0],                       // 使用GPU ID
   "scale": 1,                           // 放大倍数，SPECT降噪设为1即可
   "n_channels": 2,                      // 输入通道数，2表示前后位
-  "speed": 8,                           // 快速扫描倍数，4表示25%剂量扫描，用于生成低计数图像
+  "speed": 4,                           // 快速扫描倍数，4表示25%剂量扫描，用于生成低计数图像
   "normalization": {
-    "type": "linear",                 // 归一化方式："linear" | "anscombe" | "log"
+    "type": "anscombe",                 // 归一化方式："linear" | "anscombe" | "log"
     "max_pixel": 150
   },
   //-----------------路径设置---------------------
@@ -26,22 +26,22 @@
     "train": {
       "name": "train_dataset",          // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
-      "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x", // 训练数据集H的路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x", // 训练数据集L的路径
+      "dataroot_H": "SPECTdatasets/spectH_XCAT_bm3d_1x", // 训练数据集H的路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_4x", // 训练数据集L的路径
       "start_index": 0,
       "end_index": 96,
-      "H_size": 96,                    // 图像块大小：40 | 64 | 96 | 128 | 192
+      "H_size": 64,                    // 图像块大小：40 | 64 | 96 | 128 | 192
       "is_ideal_H": true,              // 是否为理想图
       "use_binomial_resampling": true, // 是否使用二项重采样
       "dataloader_shuffle": true,       // 是否打乱数据集
       "dataloader_num_workers": 8,      // 数据加载器的工作线程数
-      "dataloader_batch_size": 16       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
+      "dataloader_batch_size": 8       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
     },
     "test": {
       "name": "test_dataset",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_XCAT_ideal_1x",  // 测试数据集H的路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 测试数据集L的路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_4x",              // 测试数据集L的路径
       "start_index": 96,
       "end_index": 100
     },
@@ -49,7 +49,7 @@
       "name": "val_dataset_1",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_clinical",  // 验证数据集1的H路径
-      "dataroot_L": "SPECTdatasets/spectL_clinical_binomial_8x",              // 验证数据集1的L路径
+      "dataroot_L": "SPECTdatasets/spectL_clinical_binomial_4x",              // 验证数据集1的L路径
       "start_index": 0,
       "end_index": 5
     },
@@ -57,7 +57,7 @@
       "name": "val_dataset_2",           // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
       "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x",  // 验证数据集2的H路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 验证数据集2的L路径
+      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_4x",              // 验证数据集2的L路径
       "start_index": 96,
       "end_index": 100
     }

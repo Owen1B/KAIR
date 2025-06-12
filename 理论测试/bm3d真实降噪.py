@@ -170,7 +170,7 @@ def main():
     # 输入数据目录
     # 注意：用户提供了SPECTdatasets/spectH_clinical作为目标
     data_base_dir = "SPECTdatasets" 
-    clinical_subdir = "spectH_XCAT_poisson_1x"
+    clinical_subdir = "SPECTdatasets/spectH_clinical"
     input_data_dir = os.path.join(data_base_dir, clinical_subdir)
 
     # 输出结果目录
