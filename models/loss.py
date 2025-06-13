@@ -3,6 +3,7 @@ import torch.nn as nn
 import torchvision
 from torch.nn import functional as F
 from torch import autograd as autograd
+import math
 
 
 """
@@ -285,3 +286,60 @@ def gradient_penalty_loss(discriminator, real_data, fake_data, weight=None):
         gradients_penalty /= torch.mean(weight)
 
     return gradients_penalty
+
+
+# --------------------------------------------
+# Poisson Log-Likelihood (PLL) Loss
+# --------------------------------------------
+class PoissonLLLoss(nn.Module):
+    """Poisson Log-Likelihood Loss for SPECT image denoising
+    
+    Args:
+        normalization_method (str): Method used for image normalization ('log', 'anscombe', 'linear')
+        max_pixel (float): Maximum pixel value used for normalization
+        epsilon (float): Small value to prevent log(0) and ensure numerical stability
+    """
+    
+    def __init__(self, normalization_method='linear', max_pixel=150.0, epsilon=1e-9):
+        super(PoissonLLLoss, self).__init__()
+        self.normalization_method = normalization_method
+        self.max_pixel = max_pixel
+        self.epsilon = epsilon
+        
+    def denormalize_spect(self, img):
+        """反归一化SPECT图像到原始计数水平"""
+        if self.normalization_method == 'log':
+            return torch.exp(img * math.log(self.max_pixel + 1.0)) - 1.0
+        elif self.normalization_method == 'anscombe':
+            return (math.sqrt(self.max_pixel + 3/8) * img) ** 2 - 3/8
+        elif self.normalization_method == 'linear':
+            return img * self.max_pixel
+        else:
+            raise ValueError(f"Unknown normalization method: {self.normalization_method}")
+    
+    def forward(self, pred_normalized, target_normalized):
+        """计算泊松对数似然损失
+        
+        Args:
+            pred_normalized (torch.Tensor): 归一化的预测图像 (网络输出)
+            target_normalized (torch.Tensor): 归一化的目标图像 (高计数图像)
+            
+        Returns:
+            torch.Tensor: 负对数似然损失 (用于最小化)
+        """
+        # 将归一化的图像反归一化到原始计数水平
+        pred_counts = self.denormalize_spect(pred_normalized)
+        target_counts = self.denormalize_spect(target_normalized)
+        
+        # 确保计数值非负
+        pred_counts = torch.clamp(pred_counts, min=self.epsilon)
+        target_counts = torch.clamp(target_counts, min=0.0)
+        
+        # 计算泊松对数似然
+        # PLL = k * log(λ) - λ - log(k!)
+        # 由于log(k!)与θ无关，在优化时可以省略
+        # 所以损失函数为: -[k * log(λ) - λ]
+        log_likelihood = target_counts * torch.log(pred_counts) - pred_counts
+        
+        # 返回负对数似然的平均值作为损失
+        return -torch.mean(log_likelihood)

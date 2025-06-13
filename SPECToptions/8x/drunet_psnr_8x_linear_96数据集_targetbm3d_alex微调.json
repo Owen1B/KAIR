@@ -1,6 +1,6 @@
 {
   //-----------------全局设置---------------------
-  "task": "drunet_psnr_8x_linear_96数据集_targetbm3d",  // 名称
+  "task": "drunet_psnr_8x_linear_96数据集_targetbm3d_alex_微调",  // 名称
   "model": "plain",                     // 模型类型："plain"｜"gan"
   "gpu_ids": [0],                       // 使用GPU ID
   "scale": 1,                           // 放大倍数，SPECT降噪设为1即可
@@ -13,7 +13,7 @@
   //-----------------路径设置---------------------
   "path": {
     "root": "SPECTdenoising",           // 保存路径
-    "pretrained_netG": null             // 预训练模型的路径
+    "pretrained_netG": null            // 预训练模型的路径
   },
   //-----------------wandb设置---------------------
   "wandb" : {
@@ -26,16 +26,16 @@
     "train": {
       "name": "train_dataset",          // 仅作为名称
       "dataset_type": "spect",          // SPECT专用dataset
-      "dataroot_H": "SPECTdatasets/spectH_XCAT_bm3d_1x", // 训练数据集H的路径
-      "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x", // 训练数据集L的路径
+      "dataroot_H": "SPECTdatasets/spectH_clinical_bm3d_1x_no3", // 训练数据集H的路径
+      "dataroot_L": "SPECTdatasets/spectL_clinical_binomial_8x_no3", // 训练数据集L的路径
       "start_index": 0,
-      "end_index": 96,
+      "end_index": 4,
       "H_size": 64,                    // 图像块大小：40 | 64 | 96 | 128 | 192
       "is_ideal_H": true,              // 是否为理想图
       "use_binomial_resampling": true, // 是否使用二项重采样
       "dataloader_shuffle": true,       // 是否打乱数据集
       "dataloader_num_workers": 8,      // 数据加载器的工作线程数
-      "dataloader_batch_size": 16       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
+      "dataloader_batch_size": 4       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
     },
     "test": {
       "name": "test_dataset",           // 仅作为名称
@@ -59,7 +59,8 @@
       "dataroot_H": "SPECTdatasets/spectH_XCAT_poisson_1x",  // 验证数据集2的H路径
       "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x",              // 验证数据集2的L路径
       "start_index": 96,
-      "end_index": 100
+      "end_index": 100,
+      "lpips_local_repeat_n": 100
     }
   },
   //-----------------网络设置---------------------
@@ -79,6 +80,7 @@
   },
   //-----------------训练设置---------------------
   "train": {
+    "lpips_net": "alex",
     "manual_seed": 20020113,            // 随机种子
     "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
@@ -87,7 +89,7 @@
     "E_decay": 0.999,                             // 指数滑动平均，设为0表示不使用，默认0.999
 
     "G_optimizer_type": "adam",         // 优化器类型："adam"
-    "G_optimizer_lr": 1e-4,             // 学习率
+    "G_optimizer_lr": 2.5e-5,             // 学习率
     "G_optimizer_wd": 0,                // 权重衰减，默认0
     "G_optimizer_clipgrad": null,       // 梯度裁剪
     "G_optimizer_reuse": true,          // 是否重用优化器状态（从之前的检查点加载）
@@ -102,6 +104,7 @@
     "checkpoint_print": 10,             // 打印损失间隔
     "checkpoint_test": 500,             // 验证指标间隔
     "checkpoint_save": 500,            // 保存模型间隔
-    "max_epoch": 10000                    // 最大训练轮次 (epoch)
+    "max_epoch": 100000,                    // 最大训练轮次 (epoch)
+    "save_images": true               // 是否每次评估时都保存图像，true=每次保存，false=仅在最佳模型时保存
   }
 }

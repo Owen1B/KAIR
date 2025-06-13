@@ -471,9 +471,8 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                         wandb.log({'iteration': current_step, **val_metrics_dict})
 
                         # 加泊松噪声
-                        lpips_repeats = 1
-                        if val_name == 'val_2':
-                            lpips_repeats = 100
+                        val_dataset_opt = opt['datasets'][val_name]
+                        lpips_repeats = val_dataset_opt.get('lpips_local_repeat_n', 1)
                         val_metrics_avg_poisson, val_visuals_list_poisson, val_image_names_poisson = model.evaluate_metrics(val_loader, add_poisson_noise=True, lpips_local_repeat_n=lpips_repeats)
                         if val_name == 'val_2':
                             val2_poisson_lpips_local_for_csv = val_metrics_avg_poisson['lpips_local'] # 获取val_2_poisson/lpips_local
@@ -521,21 +520,25 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                 current_psnr_global = metrics_avg['psnr_global'] # 使用未加噪声的结果进行判断
                 current_ssim_global = metrics_avg['ssim_global'] # 使用未加噪声的结果进行判断
 
-                save_images = False
+                # 根据配置文件决定图像保存策略
+                save_images_always = opt['train'].get('save_images', False)
+                save_images = save_images_always  # 如果配置为True，则每次都保存
                 
                 if current_psnr_global > best_psnr:
                     best_psnr = current_psnr_global
                     model.save_best_network(model.netG, 'G', 'psnr_global', current_step)
                     logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已保存最佳PSNR_global模型: {:.2f}dB'.format(epoch, current_step, best_psnr))
-                    save_images = True
+                    if not save_images_always:  # 如果不是每次都保存，则在最佳模型时保存
+                        save_images = True
                 
                 if current_ssim_global > best_ssim:
                     best_ssim = current_ssim_global
                     model.save_best_network(model.netG, 'G', 'ssim_global', current_step)
                     logger.info('<轮次:{:3d}, 迭代:{:6,d}>, 已保存最佳SSIM_global模型: {:.4f}'.format(epoch, current_step, best_ssim))
-                    save_images = True
+                    if not save_images_always:  # 如果不是每次都保存，则在最佳模型时保存
+                        save_images = True
 
-                # 最佳模型更新时保存一次图像
+                # 根据配置决定保存图像的时机
                 if save_images:
                     for img_array, img_name in zip(visuals_list, image_names):
                         wandb.log({f"images_test/{img_name}": wandb.Image(img_array), 'iteration': current_step})

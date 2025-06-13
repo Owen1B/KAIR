@@ -19,6 +19,9 @@ class ModelBase():
         self.is_train = opt['is_train']        # training or not
         self.schedulers = []                   # schedulers
 
+        # LPIPS VGG aAlexNet
+        self.lpips_net_type = opt['train']['lpips_net']
+
     """
     # ----------------------------------------
     # Preparation before training with data
@@ -369,7 +372,7 @@ class ModelBase():
         # Calculate metrics
         psnr = util.calculate_psnr(E_rgb, H_rgb)
         ssim = util.calculate_ssim(E_rgb, H_rgb)
-        lpips = util.calculate_lpips(E_rgb, H_rgb)
+        lpips = util.calculate_lpips(E_rgb, H_rgb,net=self.lpips_net_type)
         
         return psnr, ssim, lpips
 

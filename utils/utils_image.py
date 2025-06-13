@@ -781,7 +781,7 @@ def calculate_psnrb(img1, img2, border=0):
 # --------------------------------------------
 # LPIPS
 # --------------------------------------------
-def calculate_lpips(img1, img2, border=0):
+def calculate_lpips(img1, img2, border=0,net='alex'):
     """Calculate Learned Perceptual Image Patch Similarity (LPIPS).
     
     Args:
@@ -793,7 +793,7 @@ def calculate_lpips(img1, img2, border=0):
     """
     # Global LPIPS model (initialized once)
     if not hasattr(calculate_lpips, 'loss_fn'):
-        calculate_lpips.loss_fn = lpips.LPIPS(net='alex')
+        calculate_lpips.loss_fn = lpips.LPIPS(net=net)
     
     if not img1.shape == img2.shape:
         raise ValueError('Input images must have the same dimensions.')
