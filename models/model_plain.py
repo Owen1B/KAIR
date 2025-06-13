@@ -25,6 +25,16 @@ class ModelPlain(ModelBase):
         self.netG = self.model_to_device(self.netG)
         if self.opt_train['E_decay'] > 0:
             self.netE = define_G(opt).to(self.device).eval()
+            
+        # ------------------------------------
+        # AMP support
+        # ------------------------------------
+        self.amp_enabled = self.opt_train.get('amp_enabled', False)
+        if self.amp_enabled:
+            print('AMP (Automatic Mixed Precision) is enabled.')
+            self.scaler = torch.amp.GradScaler('cuda')
+        else:
+            self.scaler = None
 
     """
     # ----------------------------------------
@@ -72,6 +82,13 @@ class ModelPlain(ModelBase):
         if load_path_optimizerG is not None and self.opt_train['G_optimizer_reuse']:
             print('Loading optimizerG [{:s}] ...'.format(load_path_optimizerG))
             self.load_optimizer(load_path_optimizerG, self.G_optimizer)
+            
+        # Load AMP scaler if available
+        if self.amp_enabled:
+            load_path_scaler = self.opt['path'].get('pretrained_scaler')
+            if load_path_scaler is not None:
+                print('Loading AMP scaler [{:s}] ...'.format(load_path_scaler))
+                self.load_scaler(load_path_scaler)
 
     # ----------------------------------------
     # load scheduler states
@@ -104,6 +121,27 @@ class ModelPlain(ModelBase):
             # 保存调度器前先删除旧的检查点
             self._delete_old_checkpoints('schedulerG')
             self.save_scheduler(self.save_dir, self.schedulers[0], 'schedulerG', iter_label)
+            
+        # Save AMP scaler if enabled
+        if self.amp_enabled and self.scaler is not None:
+            self._delete_old_checkpoints('scaler')
+            self.save_scaler(self.save_dir, iter_label)
+
+    # ----------------------------------------
+    # save AMP scaler
+    # ----------------------------------------
+    def save_scaler(self, save_dir, iter_label):
+        import os
+        save_filename = '{}_scaler.pth'.format(iter_label)
+        save_path = os.path.join(save_dir, save_filename)
+        torch.save(self.scaler.state_dict(), save_path)
+
+    # ----------------------------------------
+    # load AMP scaler
+    # ----------------------------------------
+    def load_scaler(self, load_path):
+        scaler_state_dict = torch.load(load_path, map_location=lambda storage, loc: storage)
+        self.scaler.load_state_dict(scaler_state_dict)
     
     # ----------------------------------------
     # 删除旧的检查点模型
@@ -136,8 +174,6 @@ class ModelPlain(ModelBase):
 
                 filepath = os.path.join(self.save_dir, filename)
                 os.remove(filepath)
-
-
 
     # ----------------------------------------
     # define loss
@@ -222,26 +258,48 @@ class ModelPlain(ModelBase):
     # feed L to netG
     # ----------------------------------------
     def netG_forward(self):
-        self.E = self.netG(self.L)
+        if self.amp_enabled:
+            with torch.amp.autocast('cuda'):
+                self.E = self.netG(self.L)
+        else:
+            self.E = self.netG(self.L)
 
     # ----------------------------------------
     # update parameters and get loss
     # ----------------------------------------
     def optimize_parameters(self, current_step):
         self.G_optimizer.zero_grad()
-        self.netG_forward()
-        G_loss = self.G_lossfn_weight * self.G_lossfn(self.E, self.H)
-        G_loss.backward()
+        
+        if self.amp_enabled:
+            # AMP training
+            with torch.amp.autocast('cuda'):
+                self.netG_forward()
+                G_loss = self.G_lossfn_weight * self.G_lossfn(self.E, self.H)
+            
+            # Scale loss and backward
+            self.scaler.scale(G_loss).backward()
+            
+            # Gradient clipping with AMP
+            G_optimizer_clipgrad = self.opt_train['G_optimizer_clipgrad'] if self.opt_train['G_optimizer_clipgrad'] else 0
+            if G_optimizer_clipgrad > 0:
+                self.scaler.unscale_(self.G_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.netG.parameters(), max_norm=self.opt_train['G_optimizer_clipgrad'], norm_type=2)
+            
+            # Optimizer step with AMP
+            self.scaler.step(self.G_optimizer)
+            self.scaler.update()
+        else:
+            # Standard training
+            self.netG_forward()
+            G_loss = self.G_lossfn_weight * self.G_lossfn(self.E, self.H)
+            G_loss.backward()
 
-        # ------------------------------------
-        # clip_grad
-        # ------------------------------------
-        # `clip_grad_norm` helps prevent the exploding gradient problem.
-        G_optimizer_clipgrad = self.opt_train['G_optimizer_clipgrad'] if self.opt_train['G_optimizer_clipgrad'] else 0
-        if G_optimizer_clipgrad > 0:
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.opt_train['G_optimizer_clipgrad'], norm_type=2)
+            # Gradient clipping
+            G_optimizer_clipgrad = self.opt_train['G_optimizer_clipgrad'] if self.opt_train['G_optimizer_clipgrad'] else 0
+            if G_optimizer_clipgrad > 0:
+                torch.nn.utils.clip_grad_norm_(self.netG.parameters(), max_norm=self.opt_train['G_optimizer_clipgrad'], norm_type=2)
 
-        self.G_optimizer.step()
+            self.G_optimizer.step()
 
         # ------------------------------------
         # regularizer
@@ -265,7 +323,11 @@ class ModelPlain(ModelBase):
     def test(self):
         self.netG.eval()
         with torch.no_grad():
-            self.netG_forward()
+            if self.amp_enabled:
+                with torch.amp.autocast('cuda'):
+                    self.netG_forward()
+            else:
+                self.netG_forward()
         self.netG.train()
 
     # ----------------------------------------
