@@ -1,6 +1,6 @@
 {
   //-----------------全局设置---------------------
-  "task": "drunet_pll_8x_linear_96数据集",  // 名称
+  "task": "drunet_psnr_8x_linear_96数据集_vgg",  // 名称
   "model": "plain",                     // 模型类型："plain"｜"gan"
   "gpu_ids": [0],                       // 使用GPU ID
   "scale": 1,                           // 放大倍数，SPECT降噪设为1即可
@@ -19,7 +19,7 @@
   "wandb" : {
     "entity":"owen1b_",
     "project": "bsd3",
-    "group": "drunet_pll"
+    "group": "drunet"
   },
   //-----------------数据集设置---------------------
   "datasets": {
@@ -30,7 +30,7 @@
       "dataroot_L": "SPECTdatasets/spectL_XCAT_binomial_8x", // 训练数据集L的路径
       "start_index": 0,
       "end_index": 96,
-      "H_size": 128,                    // 图像块大小：40 | 64 | 96 | 128 | 192
+      "H_size": 64,                    // 图像块大小：40 | 64 | 96 | 128 | 192
       "is_ideal_H": true,              // 是否为理想图
       "use_binomial_resampling": true, // 是否使用二项重采样
       "dataloader_shuffle": true,       // 是否打乱数据集
@@ -77,23 +77,20 @@
     "init_type": "orthogonal",          // 初始化方式
     "init_bn_type": "uniform",          // 初始化BN层
     "init_gain": 0.2                    // 初始化增益
-  },
+    ,
+},
   //-----------------训练设置---------------------
   "train": {
-    "lpips_net": "alex",
+    "lpips_net": "vgg",
     "manual_seed": 20020113,            // 随机种子
-    "G_lossfn_type": "poisson",         // 使用泊松对数似然损失
+    "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
-    
-    // PLL损失函数的特定参数
-    "G_poisson_normalization_method": "linear",  // 归一化方法，与全局设置保持一致
-    "G_poisson_max_pixel": 150.0,               // 最大像素值，与全局设置保持一致
-    "G_poisson_epsilon": 1e-9,                  // 数值稳定性参数
+    "G_charbonnier_eps": 1e-9,          // Charbonnier损失的epsilon参数
    
     "E_decay": 0.999,                             // 指数滑动平均，设为0表示不使用，默认0.999
 
     "G_optimizer_type": "adam",         // 优化器类型："adam"
-    "G_optimizer_lr": 5e-5,             // 学习率
+    "G_optimizer_lr": 1e-4,             // 学习率
     "G_optimizer_wd": 0,                // 权重衰减，默认0
     "G_optimizer_clipgrad": null,       // 梯度裁剪
     "G_optimizer_reuse": true,          // 是否重用优化器状态（从之前的检查点加载）
@@ -106,8 +103,10 @@
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
     "checkpoint_print": 10,             // 打印损失间隔
-    "checkpoint_test": 2000,             // 验证指标间隔
-    "checkpoint_save": 2000,            // 保存模型间隔
-    "max_epoch": 10000                    // 最大训练轮次 (epoch)
+    "checkpoint_test": 500,             // 验证指标间隔
+    "checkpoint_save": 500,            // 保存模型间隔
+    "max_epoch": 10000,                    // 最大训练轮次 (epoch)
+    "amp_enabled": false,
+    "save_images": false               // 是否每次评估时都保存图像，true=每次保存，false=仅在最佳模型时保存
   }
 } 

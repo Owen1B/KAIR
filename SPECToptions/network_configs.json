@@ -1,0 +1,47 @@
+{
+  "drunet": {
+    "net_type": "drunet",               // "dncnn" | "fdncnn" | "ffdnet" | "srmd" | "dpsr" | "srresnet0" |  "srresnet1" | "rrdbnet" | "drunet"
+    "in_nc": 2,                         // 输入通道数
+    "out_nc": 2,                        // 输出通道数
+    "nc": [64, 128, 256, 512],          // 网络中间层的特征通道数
+    "nb": 4,                            // 表示每个下采样/上采样阶段的残差块数量
+    "act_mode": "R",                    // "BR"表示BN+ReLU | "R"表示ReLU
+    "upsample_mode": "convtranspose",   // "pixelshuffle" | "convtranspose" | "upconv"
+    "downsample_mode": "strideconv",    // "strideconv" | "avgpool" | "maxpool"
+    "bias": false,                      // 是否使用偏置
+    "init_type": "orthogonal",          // 初始化方式
+    "init_bn_type": "uniform",          // 初始化BN层
+    "init_gain": 0.2                    // 初始化增益
+  },
+  "rrdbnet": {
+    "net_type": "rrdbnet_no_up",        // "dncnn" | "fdncnn" | "ffdnet" | "srmd" | "dpsr" | "srresnet0" |  "srresnet1" | "rrdbnet" | "drunet"
+    "in_nc": 2,                         // 输入通道数
+    "out_nc": 2,                        // 输出通道数
+    "nf": 64,            // 96 for DPSR, 128 for SRMD, 64 for "dncnn"
+    "nb": 23,            // 12 for "srmd", 15 for "ffdnet", 20 for "dncnn", 16 for "srresnet" and "dpsr"
+    "gc": 32,            // 
+    "ng": 2,             // unused
+    "reduction": 16,    // unused
+    "act_mode": "L",     // "BR" for BN+ReLU | "R" for ReLU
+    "bias": true,
+
+    "init_type": "orthogonal",      // "orthogonal" | "normal" | "uniform" | "xavier_normal" | "xavier_uniform" | "kaiming_normal" | "kaiming_uniform"
+    "init_bn_type": "uniform",      // "uniform" | "constant"
+    "init_gain": 0.2
+  },
+  "swinir": {
+    "net_type": "swinir",
+    "upscale": 1,
+    "in_chans": 2,
+    "img_size": 64,
+    "window_size": 8,
+    "img_range": 1.0,
+    "depths": [6, 6, 6, 6, 6, 6],
+    "embed_dim": 180,
+    "num_heads": [6, 6, 6, 6, 6, 6],
+    "mlp_ratio": 2,
+    "upsampler": null,                 // "pixelshuffle" | "pixelshuffledirect" | "nearest+conv" | null
+    "resi_connection": "1conv",        // "1conv" | "3conv"
+    "init_type": "default"
+  }
+} 

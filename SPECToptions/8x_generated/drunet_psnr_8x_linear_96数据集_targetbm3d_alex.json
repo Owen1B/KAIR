@@ -1,6 +1,6 @@
 {
   //-----------------全局设置---------------------
-  "task": "rrdbnet_psnr_8x_linear_96数据集_targetbm3d_alex",  // 名称
+  "task": "drunet_psnr_8x_linear_96数据集_targetbm3d_alex",  // 名称
   "model": "plain",                     // 模型类型："plain"｜"gan"
   "gpu_ids": [0],                       // 使用GPU ID
   "scale": 1,                           // 放大倍数，SPECT降噪设为1即可
@@ -19,7 +19,7 @@
   "wandb" : {
     "entity":"owen1b_",
     "project": "bsd3",
-    "group": "rrdbnet"
+    "group": "drunet"
   },
   //-----------------数据集设置---------------------
   "datasets": {
@@ -65,25 +65,23 @@
   },
   //-----------------网络设置---------------------
   "netG": {
-    "net_type": "rrdbnet_no_up",               // "dncnn" | "fdncnn" | "ffdnet" | "srmd" | "dpsr" | "srresnet0" |  "srresnet1" | "rrdbnet" | "drunet"
+    "net_type": "drunet",               // "dncnn" | "fdncnn" | "ffdnet" | "srmd" | "dpsr" | "srresnet0" |  "srresnet1" | "rrdbnet" | "drunet"
     "in_nc": 2,                         // 输入通道数
     "out_nc": 2,                        // 输出通道数
-    "nf": 64,            // 96 for DPSR, 128 for SRMD, 64 for "dncnn"
-    "nb": 23,            // 12 for "srmd", 15 for "ffdnet", 20 for "dncnn", 16 for "srresnet" and "dpsr"
-    "gc": 32,            // 
-    "ng": 2,             // unused
-    "reduction" : 16,    // unused
-    "act_mode": "L",     // "BR" for BN+ReLU | "R" for ReLU
-    "bias": true,
-
-    "init_type": "orthogonal",      // "orthogonal" | "normal" | "uniform" | "xavier_normal" | "xavier_uniform" | "kaiming_normal" | "kaiming_uniform"
-    "init_bn_type": "uniform",      // "uniform" | "constant"
-    "init_gain": 0.2
-  },
+    "nc": [64, 128, 256, 512],          // 网络中间层的特征通道数
+    "nb": 4,                            // 表示每个下采样/上采样阶段的残差块数量
+    "act_mode": "R",                    // "BR"表示BN+ReLU | "R"表示ReLU
+    "upsample_mode": "convtranspose",   // "pixelshuffle" | "convtranspose" | "upconv"
+    "downsample_mode": "strideconv",    // "strideconv" | "avgpool" | "maxpool"
+    "bias": false,                      // 是否使用偏置
+    "init_type": "orthogonal",          // 初始化方式
+    "init_bn_type": "uniform",          // 初始化BN层
+    "init_gain": 0.2                    // 初始化增益
+    ,
+},
   //-----------------训练设置---------------------
   "train": {
     "lpips_net": "alex",
-    "amp_enabled": true,
     "manual_seed": 20020113,            // 随机种子
     "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
@@ -107,6 +105,8 @@
     "checkpoint_print": 10,             // 打印损失间隔
     "checkpoint_test": 500,             // 验证指标间隔
     "checkpoint_save": 500,            // 保存模型间隔
-    "max_epoch": 10000                    // 最大训练轮次 (epoch)
+    "max_epoch": 10000,                    // 最大训练轮次 (epoch)
+    "amp_enabled": false,
+    "save_images": false               // 是否每次评估时都保存图像，true=每次保存，false=仅在最佳模型时保存
   }
-}
+} 

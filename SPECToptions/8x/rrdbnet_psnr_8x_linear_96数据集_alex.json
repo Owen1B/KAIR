@@ -83,10 +83,11 @@
   //-----------------训练设置---------------------
   "train": {
     "lpips_net": "alex",
+    "amp_enabled": true,
     "manual_seed": 20020113,            // 随机种子
     "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
-    "G_charbonnier_eps": 1e-9,          // Charbonnier损失的epsilon参数
+    "G_charbonnier_eps": 1e-6,          // Charbonnier损失的epsilon参数
    
     "E_decay": 0.999,                             // 指数滑动平均，设为0表示不使用，默认0.999
 
