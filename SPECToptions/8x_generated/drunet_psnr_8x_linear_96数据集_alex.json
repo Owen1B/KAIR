@@ -77,7 +77,7 @@
     "init_type": "orthogonal",          // 初始化方式
     "init_bn_type": "uniform",          // 初始化BN层
     "init_gain": 0.2                    // 初始化增益
-    ,
+    
 },
   //-----------------训练设置---------------------
   "train": {

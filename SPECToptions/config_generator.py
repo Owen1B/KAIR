@@ -69,11 +69,18 @@ def load_network_config_with_comments(network_config_path: str, network_type: st
         
                  # 构建最终的网络配置字符串
         result = "{\n"
+        # 找到最后一个非空行的索引
+        last_non_empty_index = -1
+        for i in range(len(config_lines) - 1, -1, -1):
+            if config_lines[i].strip():
+                last_non_empty_index = i
+                break
+        
         for i, line in enumerate(config_lines):
             if line.strip():
                 clean_line = line.strip()
-                # 如果是最后一行且包含init_gain，移除逗号
-                if i == len(config_lines) - 1 and 'init_gain' in clean_line and clean_line.endswith(','):
+                # 如果是最后一个非空行且以逗号结尾，移除逗号
+                if i == last_non_empty_index and clean_line.endswith(','):
                     clean_line = clean_line[:-1]
                 result += "    " + clean_line + "\n"
         result += "}"

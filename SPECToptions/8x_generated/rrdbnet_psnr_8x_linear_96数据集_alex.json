@@ -78,7 +78,7 @@
     "init_type": "orthogonal",      // "orthogonal" | "normal" | "uniform" | "xavier_normal" | "xavier_uniform" | "kaiming_normal" | "kaiming_uniform"
     "init_bn_type": "uniform",      // "uniform" | "constant"
     "init_gain": 0.2
-    ,
+    
 },
   //-----------------训练设置---------------------
   "train": {
@@ -104,8 +104,8 @@
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
     "checkpoint_print": 10,             // 打印损失间隔
-    "checkpoint_test": 500,             // 验证指标间隔
-    "checkpoint_save": 500,            // 保存模型间隔
+    "checkpoint_test": 3000,             // 验证指标间隔
+    "checkpoint_save": 3000,            // 保存模型间隔
     "max_epoch": 10000,                    // 最大训练轮次 (epoch)
     "amp_enabled": true,
     "save_images": false               // 是否每次评估时都保存图像，true=每次保存，false=仅在最佳模型时保存

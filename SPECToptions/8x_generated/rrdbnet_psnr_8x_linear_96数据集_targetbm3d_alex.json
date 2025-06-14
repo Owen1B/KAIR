@@ -35,7 +35,7 @@
       "use_binomial_resampling": true, // 是否使用二项重采样
       "dataloader_shuffle": true,       // 是否打乱数据集
       "dataloader_num_workers": 8,      // 数据加载器的工作线程数
-      "dataloader_batch_size": 12       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
+      "dataloader_batch_size": 16       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
     },
     "test": {
       "name": "test_dataset",           // 仅作为名称
@@ -78,7 +78,7 @@
     "init_type": "orthogonal",      // "orthogonal" | "normal" | "uniform" | "xavier_normal" | "xavier_uniform" | "kaiming_normal" | "kaiming_uniform"
     "init_bn_type": "uniform",      // "uniform" | "constant"
     "init_gain": 0.2
-    ,
+    
 },
   //-----------------训练设置---------------------
   "train": {
@@ -86,7 +86,7 @@
     "manual_seed": 20020113,            // 随机种子
     "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
-    "G_charbonnier_eps": 1e-9,          // Charbonnier损失的epsilon参数
+    "G_charbonnier_eps": 1e-6,          // Charbonnier损失的epsilon参数
    
     "E_decay": 0.999,                             // 指数滑动平均，设为0表示不使用，默认0.999
 
@@ -104,8 +104,8 @@
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
     "checkpoint_print": 10,             // 打印损失间隔
-    "checkpoint_test": 500,             // 验证指标间隔
-    "checkpoint_save": 500,            // 保存模型间隔
+    "checkpoint_test": 3000,             // 验证指标间隔
+    "checkpoint_save": 3000,            // 保存模型间隔
     "max_epoch": 10000,                    // 最大训练轮次 (epoch)
     "amp_enabled": true,
     "save_images": false               // 是否每次评估时都保存图像，true=每次保存，false=仅在最佳模型时保存
