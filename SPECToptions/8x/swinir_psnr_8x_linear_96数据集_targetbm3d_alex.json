@@ -35,7 +35,7 @@
       "use_binomial_resampling": true, // 是否使用二项重采样
       "dataloader_shuffle": true,       // 是否打乱数据集
       "dataloader_num_workers": 8,      // 数据加载器的工作线程数
-      "dataloader_batch_size": 8       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
+      "dataloader_batch_size": 4       // 批量大小：1 | 16 | 32 | 48 | 64 | 128
     },
     "test": {
       "name": "test_dataset",           // 仅作为名称
@@ -83,16 +83,16 @@
   //-----------------训练设置---------------------
   "train": {
     "lpips_net": "alex",
-    "amp_enabled": true,
+    "amp_enabled": true,                // 启用AMP训练
     "manual_seed": 20020113,            // 随机种子
     "G_lossfn_type": "charbonnier",     // 推荐使用"l1" | "l2sum" | "l2" | "ssim" | "charbonnier"
     "G_lossfn_weight": 1.0,             // 默认值
-    "G_charbonnier_eps": 1e-9,          // Charbonnier损失的epsilon参数
+    "G_charbonnier_eps": 1e-6,          // 增大epsilon防止数值不稳定，从1e-9改为1e-6
    
     "E_decay": 0.999,                             // 指数滑动平均，设为0表示不使用，默认0.999
 
     "G_optimizer_type": "adam",         // 优化器类型："adam"
-    "G_optimizer_lr": 1e-4,             // 学习率
+    "G_optimizer_lr": 1e-4,             // 降低学习率，从5e-4改为2e-4，AMP训练建议用更低的学习率
     "G_optimizer_wd": 0,                // 权重衰减，默认0
     "G_optimizer_clipgrad": null,       // 梯度裁剪
     "G_optimizer_reuse": true,          // 是否重用优化器状态（从之前的检查点加载）
