@@ -27,9 +27,12 @@ from tqdm import tqdm
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
-from pytorch_fid.fid_score import calculate_fid_given_paths
-import tempfile
-import shutil
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    print("警告: pandas未安装，将跳过CSV数据保存功能")
 
 # 设置 matplotlib 使用支持中文的字体
 plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -69,55 +72,6 @@ def prepare_for_lpips(img_np: np.ndarray, data_range: float, device: torch.devic
     img_tensor = torch.from_numpy(img_normalized.astype(np.float32)).unsqueeze(0).unsqueeze(0)
     return img_tensor.to(device)
 
-def calculate_fid_for_images(img1, img2, device):
-    """计算两张图像之间的FID分数。
-    
-    Args:
-        img1 (ndarray): 第一张图像
-        img2 (ndarray): 第二张图像
-        device (torch.device): 计算设备
-    
-    Returns:
-        float: FID分数
-    """
-    # 创建临时目录
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # 创建子目录
-        img1_dir = os.path.join(temp_dir, 'img1')
-        img2_dir = os.path.join(temp_dir, 'img2')
-        os.makedirs(img1_dir, exist_ok=True)
-        os.makedirs(img2_dir, exist_ok=True)
-        
-        # 保存图像到临时目录
-        img1_path = os.path.join(img1_dir, 'img.png')
-        img2_path = os.path.join(img2_dir, 'img.png')
-        
-        # 将图像归一化到[0, 255]并保存
-        img1_255 = (img1 * 255).astype(np.uint8)
-        img2_255 = (img2 * 255).astype(np.uint8)
-        
-        # 确保图像是3通道的
-        if len(img1_255.shape) == 2:
-            img1_255 = np.stack([img1_255] * 3, axis=-1)
-        if len(img2_255.shape) == 2:
-            img2_255 = np.stack([img2_255] * 3, axis=-1)
-            
-        # 保存图像
-        plt.imsave(img1_path, img1_255)
-        plt.imsave(img2_path, img2_255)
-        
-        # 计算FID
-        fid = calculate_fid_given_paths([img1_dir, img2_dir], 
-                                      batch_size=1,
-                                      device=device,
-                                      dims=2048,
-                                      num_workers=0)  # 设置num_workers=0避免多进程问题
-        return fid
-    finally:
-        # 清理临时目录
-        shutil.rmtree(temp_dir)
-
 def analyze_single_file_lpips_vs_noise(
     original_noisy_file_path: str,
     reference_file_path: str,
@@ -146,7 +100,7 @@ def analyze_single_file_lpips_vs_noise(
         print(f"无法加载所需数据文件，跳过 {original_filename}.")
         return
 
-    view_names = ['Anterior', 'Posterior']
+    view_names = ['Anterior']
 
     for view_idx, view_name in enumerate(view_names):
         print(f"  处理视图: {view_name}")
@@ -164,14 +118,17 @@ def analyze_single_file_lpips_vs_noise(
         avg_lpips_scores_for_view = []
         avg_psnr_scores_for_view = []
         avg_ssim_scores_for_view = []
-        avg_fid_scores_for_view = []
+        
+        # 添加标准差列表
+        std_lpips_scores_for_view = []
+        std_psnr_scores_for_view = []
+        std_ssim_scores_for_view = []
         
         for scale_factor in tqdm(noise_scale_factors, desc=f"    {view_name} - 缩放因子"):
             lambda_img = np.maximum(0, reference_view * scale_factor)
             current_scale_lpips_values = []
             current_scale_psnr_values = []
             current_scale_ssim_values = []
-            current_scale_fid_values = []
             
             for _ in range(num_repetitions):
                 renoised_img = np.random.poisson(lambda_img).astype(np.float32)/scale_factor
@@ -181,73 +138,64 @@ def analyze_single_file_lpips_vs_noise(
                     lpips_score = loss_fn_alex(original_view_lpips_tensor, renoised_img_lpips_tensor).item()
                 current_scale_lpips_values.append(lpips_score)
                 
-                # 计算PSNR、SSIM、FID
+                # 计算PSNR、SSIM
                 psnr_score = psnr(original_view, renoised_img, data_range=data_r)
                 ssim_score = ssim(original_view, renoised_img, data_range=data_r)
                 
                 current_scale_psnr_values.append(psnr_score)
                 current_scale_ssim_values.append(ssim_score)
-                
-                # 归一化图像到[0,1]范围
-                img1_norm = original_view / data_r
-                img2_norm = renoised_img / data_r
-                try:
-                    fid_score = calculate_fid_for_images(img1_norm, img2_norm, device)
-                except Exception as e:
-                    print(f"    警告: FID计算失败: {e}")
-                    fid_score = float('inf')  # 如果计算失败，使用无穷大
-                
-                current_scale_psnr_values.append(psnr_score)
-                current_scale_ssim_values.append(ssim_score)
-                current_scale_fid_values.append(fid_score)
             
+            # 计算平均值和标准差
             avg_lpips_scores_for_view.append(np.mean(current_scale_lpips_values))
             avg_psnr_scores_for_view.append(np.mean(current_scale_psnr_values))
             avg_ssim_scores_for_view.append(np.mean(current_scale_ssim_values))
-            avg_fid_scores_for_view.append(np.mean(current_scale_fid_values))
+            
+            std_lpips_scores_for_view.append(np.std(current_scale_lpips_values))
+            std_psnr_scores_for_view.append(np.std(current_scale_psnr_values))
+            std_ssim_scores_for_view.append(np.std(current_scale_ssim_values))
 
         # 创建四个子图
-        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(12, 24))
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 24))
         
         # 设置x轴刻度
         x_ticks = noise_scale_factors
         x_labels = [f'{x:.2f}' for x in x_ticks]
         
-        # LPIPS图
-        ax1.semilogx(noise_scale_factors, avg_lpips_scores_for_view, marker='o', linestyle='-', linewidth=2)
+        # LPIPS图（带误差条）
+        ax1.errorbar(noise_scale_factors, avg_lpips_scores_for_view, 
+                    yerr=std_lpips_scores_for_view, marker='o', linestyle='-', 
+                    linewidth=2, capsize=5, capthick=2, elinewidth=1)
+        ax1.set_xscale('log')
         ax1.set_title(f'LPIPS vs. Noise Scale Factor - {view_name} View\n{comparison_name}\nFile: {original_filename}', pad=20)
         ax1.set_xlabel('Noise Scale Factor', labelpad=10)
-        ax1.set_ylabel('Average LPIPS', labelpad=10)
+        ax1.set_ylabel('Average LPIPS ± Std', labelpad=10)
         ax1.grid(True, which='both', linestyle='--', alpha=0.7)
         ax1.set_xticks(x_ticks)
         ax1.set_xticklabels(x_labels, rotation=45)
         
-        # PSNR图
-        ax2.semilogx(noise_scale_factors, avg_psnr_scores_for_view, marker='o', linestyle='-', color='green', linewidth=2)
+        # PSNR图（带误差条）
+        ax2.errorbar(noise_scale_factors, avg_psnr_scores_for_view, 
+                    yerr=std_psnr_scores_for_view, marker='o', linestyle='-', 
+                    color='green', linewidth=2, capsize=5, capthick=2, elinewidth=1)
+        ax2.set_xscale('log')
         ax2.set_title('PSNR vs. Noise Scale Factor', pad=20)
         ax2.set_xlabel('Noise Scale Factor', labelpad=10)
-        ax2.set_ylabel('Average PSNR (dB)', labelpad=10)
+        ax2.set_ylabel('Average PSNR (dB) ± Std', labelpad=10)
         ax2.grid(True, which='both', linestyle='--', alpha=0.7)
         ax2.set_xticks(x_ticks)
         ax2.set_xticklabels(x_labels, rotation=45)
         
-        # SSIM图
-        ax3.semilogx(noise_scale_factors, avg_ssim_scores_for_view, marker='o', linestyle='-', color='red', linewidth=2)
+        # SSIM图（带误差条）
+        ax3.errorbar(noise_scale_factors, avg_ssim_scores_for_view, 
+                    yerr=std_ssim_scores_for_view, marker='o', linestyle='-', 
+                    color='red', linewidth=2, capsize=5, capthick=2, elinewidth=1)
+        ax3.set_xscale('log')
         ax3.set_title('SSIM vs. Noise Scale Factor', pad=20)
         ax3.set_xlabel('Noise Scale Factor', labelpad=10)
-        ax3.set_ylabel('Average SSIM', labelpad=10)
+        ax3.set_ylabel('Average SSIM ± Std', labelpad=10)
         ax3.grid(True, which='both', linestyle='--', alpha=0.7)
         ax3.set_xticks(x_ticks)
         ax3.set_xticklabels(x_labels, rotation=45)
-
-        # FID图
-        ax4.semilogx(noise_scale_factors, avg_fid_scores_for_view, marker='o', linestyle='-', color='orange', linewidth=2)
-        ax4.set_title('FID vs. Noise Scale Factor', pad=20)
-        ax4.set_xlabel('Noise Scale Factor', labelpad=10)
-        ax4.set_ylabel('Average FID', labelpad=10)
-        ax4.grid(True, which='both', linestyle='--', alpha=0.7)
-        ax4.set_xticks(x_ticks)
-        ax4.set_xticklabels(x_labels, rotation=45)
         
         plt.tight_layout()
         
@@ -259,6 +207,48 @@ def analyze_single_file_lpips_vs_noise(
         except Exception as e:
             print(f"    保存图表 {plot_filepath} 失败: {e}")
         plt.close()
+        
+        # 保存数值数据到CSV文件
+        csv_filename = f"metrics_data_{view_name.lower()}_{comparison_name}_{os.path.splitext(original_filename)[0]}.csv"
+        csv_filepath = os.path.join(output_plot_dir, csv_filename)
+        
+        if PANDAS_AVAILABLE:
+            try:
+                data_dict = {
+                    'Noise_Scale_Factor': noise_scale_factors,
+                    'LPIPS_Mean': avg_lpips_scores_for_view,
+                    'LPIPS_Std': std_lpips_scores_for_view,
+                    'PSNR_Mean': avg_psnr_scores_for_view,
+                    'PSNR_Std': std_psnr_scores_for_view,
+                    'SSIM_Mean': avg_ssim_scores_for_view,
+                    'SSIM_Std': std_ssim_scores_for_view
+                }
+                
+                df = pd.DataFrame(data_dict)
+                df.to_csv(csv_filepath, index=False, float_format='%.6f')
+                print(f"    数值数据已保存到: {csv_filepath}")
+                
+            except Exception as e:
+                print(f"    保存CSV数据失败: {e}")
+        
+        # 打印部分关键数据点（无论是否有pandas）
+        print(f"    关键数据点预览 ({view_name}):")
+        print(f"    {'Scale':<8} {'LPIPS':<12} {'PSNR':<12} {'SSIM':<12}")
+        print(f"    {'':<8} {'Mean±Std':<12} {'Mean±Std':<12} {'Mean±Std':<12}")
+        print("    " + "-" * 60)
+        
+        # 显示几个关键点的数据
+        key_indices = [0, len(noise_scale_factors)//4, len(noise_scale_factors)//2, 
+                      3*len(noise_scale_factors)//4, -1]
+        for i in key_indices:
+            if i < len(noise_scale_factors):
+                scale = noise_scale_factors[i]
+                lpips_val = f"{avg_lpips_scores_for_view[i]:.3f}±{std_lpips_scores_for_view[i]:.3f}"
+                psnr_val = f"{avg_psnr_scores_for_view[i]:.2f}±{std_psnr_scores_for_view[i]:.2f}"
+                ssim_val = f"{avg_ssim_scores_for_view[i]:.3f}±{std_ssim_scores_for_view[i]:.3f}"
+                print(f"    {scale:<8.2f} {lpips_val:<12} {psnr_val:<12} {ssim_val:<12}")
+        
+        print()
 
 def main():
     # 3. Configuration
