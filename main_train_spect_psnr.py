@@ -7,6 +7,9 @@ import logging
 import csv
 import matplotlib.pyplot as plt
 import shutil
+import threading
+import queue
+import time
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch
@@ -31,6 +34,90 @@ from models.select_model import define_Model
 # github: https://github.com/Owen1B
 '''
 
+
+class AsyncWandBUploader:
+    """异步WandB上传器，避免图片上传阻塞训练过程"""
+    
+    def __init__(self, max_queue_size=100):
+        self.upload_queue = queue.Queue(maxsize=max_queue_size)
+        self.worker_thread = None
+        self.stop_event = threading.Event()
+        self.start_worker()
+    
+    def start_worker(self):
+        """启动上传工作线程"""
+        self.worker_thread = threading.Thread(target=self._upload_worker, daemon=True)
+        self.worker_thread.start()
+    
+    def _upload_worker(self):
+        """上传工作线程主函数"""
+        while not self.stop_event.is_set():
+            try:
+                # 从队列获取上传任务，超时1秒
+                upload_data = self.upload_queue.get(timeout=1.0)
+                if upload_data is None:  # 停止信号
+                    break
+                
+                # 执行实际上传
+                try:
+                    # 检查是否需要处理图片数据
+                    processed_data = {}
+                    for key, value in upload_data.items():
+                        if isinstance(value, tuple) and len(value) == 2:
+                            # 这是原始图片数据 (img_array, img_name)
+                            img_array, img_name = value
+                            processed_data[key] = wandb.Image(img_array)
+                        else:
+                            processed_data[key] = value
+                    
+                    wandb.log(processed_data)
+                except Exception as e:
+                    print(f"WandB上传失败: {e}")
+                finally:
+                    self.upload_queue.task_done()
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"上传工作线程异常: {e}")
+    
+    def log_async(self, data_dict):
+        """异步提交日志数据到上传队列"""
+        try:
+            self.upload_queue.put(data_dict, block=False)
+        except queue.Full:
+            print("警告: WandB上传队列已满，跳过本次图片上传")
+    
+    def log_async_raw_image(self, img_array, img_key, iteration):
+        """异步提交原始图片数据，避免在主线程中创建wandb.Image对象"""
+        try:
+            # 将原始图片数据和键值作为元组传递，在工作线程中处理
+            upload_data = {
+                img_key: (img_array, img_key),
+                'iteration': iteration
+            }
+            self.upload_queue.put(upload_data, block=False)
+        except queue.Full:
+            print("警告: WandB上传队列已满，跳过本次图片上传")
+    
+    def log_sync(self, data_dict):
+        """同步上传（用于重要的度量数据）"""
+        wandb.log(data_dict)
+    
+    def stop_and_wait(self, timeout=30):
+        """停止上传器并等待所有任务完成"""
+        # 等待队列中的任务完成
+        self.upload_queue.join()
+        
+        # 发送停止信号
+        self.stop_event.set()
+        self.upload_queue.put(None)  # 唤醒工作线程
+        
+        # 等待工作线程结束
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=timeout)
+
+
 def _plot_scatter(x_data, y_data, c_data, x_label, y_label, c_label, title, plot_path):
     """Helper function to create a scatter plot."""
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -48,7 +135,7 @@ def _plot_scatter(x_data, y_data, c_data, x_label, y_label, c_label, title, plot
     plt.close(fig)
     return plot_path
 
-def log_and_plot_correlations(log_dir, current_step, test_lpips, test_ssim, test_psnr, val_lpips):
+def log_and_plot_correlations(log_dir, current_step, test_lpips, test_ssim, test_psnr, val_lpips, async_uploader=None):
     """记录关键指标到CSV并绘制相关性散点图"""
     csv_path = os.path.join(log_dir, 'metrics_correlation.csv')
 
@@ -100,7 +187,18 @@ def log_and_plot_correlations(log_dir, current_step, test_lpips, test_ssim, test
         )
         wandb_images[f'correlation_plots/{title}'] = wandb.Image(plot_path)
 
-    wandb.log({**wandb_images, 'iteration': current_step})
+    # 使用异步上传器上传图片
+    if async_uploader:
+        # 分别处理每个图片，避免在主线程中创建wandb.Image对象
+        for key, img_obj in wandb_images.items():
+            # 获取原始图片路径并异步上传
+            if hasattr(img_obj, '_path'):
+                async_uploader.log_async({key: img_obj, 'iteration': current_step})
+            else:
+                async_uploader.log_async({key: img_obj, 'iteration': current_step})
+    else:
+        upload_data = {**wandb_images, 'iteration': current_step}
+        wandb.log(upload_data)
 
 
 def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
@@ -224,6 +322,10 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
         )
         with open(run_id_path, 'w') as f:
             json.dump({'run_id': wandb.run.id}, f)
+        
+        # 初始化异步上传器
+        async_uploader = AsyncWandBUploader(max_queue_size=200)
+        logger.info("已初始化异步WandB上传器，图片上传将在后台进行")
 
     '''
     # ----------------------------------------
@@ -343,7 +445,8 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                     'train/learning_rate': model.current_learning_rate(),
                     **{f'train/{k}': v for k, v in logs.items()}
                 }
-                wandb.log(wandb_log)
+                # 训练度量数据使用同步上传，确保及时性
+                async_uploader.log_sync(wandb_log)
         
             # -------------------------------
             # 5) 评估模型并保存最佳模型及图像
@@ -400,7 +503,8 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                     'test/lpips_local': metrics_avg['lpips_local'],
                     'test/loss': metrics_avg['loss']
                 }
-                wandb.log({'iteration': current_step, **metrics_dict})
+                # 度量数据同步上传
+                async_uploader.log_sync({'iteration': current_step, **metrics_dict})
 
                 # 测试集评估 (带泊松噪声)
                 metrics_avg_poisson, visuals_list_poisson, image_names_poisson = model.evaluate_metrics(test_loader, add_poisson_noise=True)
@@ -431,14 +535,18 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                     'test_poisson/lpips_local': metrics_avg_poisson['lpips_local'],
                     'test_poisson/loss': metrics_avg_poisson['loss']
                 }
-                wandb.log({'iteration': current_step, **metrics_dict_poisson})
+                # 度量数据同步上传
+                async_uploader.log_sync({'iteration': current_step, **metrics_dict_poisson})
 
 
                 # 验证集评估（如果存在）
+                val_images_data = {}  # 存储验证集图片数据，避免重复评估
                 if 'val_loaders' in locals():
                     for val_name, val_loader in val_loaders.items():
                         # 不加泊松噪声
                         val_metrics_avg, val_visuals_list, val_image_names = model.evaluate_metrics(val_loader, add_poisson_noise=False)
+                        # 保存图片数据供后续使用，避免重复评估
+                        val_images_data[f'{val_name}'] = (val_visuals_list, val_image_names)
                         val_message_global = msg_format_poissonll.format(
                             epoch,
                             current_step,
@@ -468,12 +576,16 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                             f'{val_name}/loss': val_metrics_avg['loss'],
                             f'{val_name}/poisson_ll': val_metrics_avg['poisson_ll']
                         }
-                        wandb.log({'iteration': current_step, **val_metrics_dict})
+                        # 度量数据同步上传
+                        async_uploader.log_sync({'iteration': current_step, **val_metrics_dict})
 
                         # 加泊松噪声
                         val_dataset_opt = opt['datasets'][val_name]
                         lpips_repeats = val_dataset_opt.get('lpips_local_repeat_n', 1)
                         val_metrics_avg_poisson, val_visuals_list_poisson, val_image_names_poisson = model.evaluate_metrics(val_loader, add_poisson_noise=True, lpips_local_repeat_n=lpips_repeats)
+                        # 保存泊松噪声图片数据供后续使用，避免重复评估
+                        val_images_data[f'{val_name}_poisson'] = (val_visuals_list_poisson, val_image_names_poisson)
+                        
                         if val_name == 'val_2':
                             val2_poisson_lpips_local_for_csv = val_metrics_avg_poisson['lpips_local'] # 获取val_2_poisson/lpips_local
 
@@ -504,7 +616,8 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                             f'{val_name}_poisson/lpips_local': val_metrics_avg_poisson['lpips_local'],
                             f'{val_name}_poisson/loss': val_metrics_avg_poisson['loss']
                         }
-                        wandb.log({'iteration': current_step, **val_metrics_dict_poisson})
+                        # 度量数据同步上传
+                        async_uploader.log_sync({'iteration': current_step, **val_metrics_dict_poisson})
                 # 在所有评估完成后，检查是否需要记录CSV和绘图
                 if test_lpips_local_for_csv is not None and val2_poisson_lpips_local_for_csv is not None:
                     log_and_plot_correlations(
@@ -513,7 +626,8 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
                         test_lpips=test_lpips_local_for_csv, 
                         test_ssim=test_ssim_local_for_csv,
                         test_psnr=test_psnr_local_for_csv,
-                        val_lpips=val2_poisson_lpips_local_for_csv
+                        val_lpips=val2_poisson_lpips_local_for_csv,
+                        async_uploader=async_uploader
                     )
                 
                 # 最佳模型的判断基于全局PSNR和全局SSIM (与之前行为保持一致，不使用泊松噪声后的结果判断最佳模型)
@@ -540,23 +654,18 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
 
                 # 根据配置决定保存图像的时机
                 if save_images:
+                    # 使用已有的测试集图片数据，避免重复评估
                     for img_array, img_name in zip(visuals_list, image_names):
-                        wandb.log({f"images_test/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                        async_uploader.log_async_raw_image(img_array, f"images_test/{img_name}", current_step)
                     # 同时保存带泊松噪声的测试集图像 (如果需要)
                     for img_array, img_name in zip(visuals_list_poisson, image_names_poisson):
-                        wandb.log({f"images_test_poisson/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                        async_uploader.log_async_raw_image(img_array, f"images_test_poisson/{img_name}", current_step)
 
-                    # 保存验证集图像
-                    if 'val_loaders' in locals():
-                        for val_name, val_loader in val_loaders.items():
-                            # 不加噪声的验证集图像
-                            _, val_visuals_list_orig, val_image_names_orig = model.evaluate_metrics(val_loader, add_poisson_noise=False)
-                            for img_array, img_name in zip(val_visuals_list_orig, val_image_names_orig):
-                                wandb.log({f"images_{val_name}/{img_name}": wandb.Image(img_array), 'iteration': current_step})
-                            # 加噪声的验证集图像
-                            _, val_visuals_list_p, val_image_names_p = model.evaluate_metrics(val_loader, add_poisson_noise=True)
-                            for img_array, img_name in zip(val_visuals_list_p, val_image_names_p):
-                                wandb.log({f"images_{val_name}_poisson/{img_name}": wandb.Image(img_array), 'iteration': current_step})
+                    # 保存验证集图像 - 使用之前评估时已经获得的图片数据，避免重复评估
+                    if 'val_images_data' in locals():
+                        for key, (visuals_list, image_names) in val_images_data.items():
+                            for img_array, img_name in zip(visuals_list, image_names):
+                                async_uploader.log_async_raw_image(img_array, f"images_{key}/{img_name}", current_step)
 
             # -------------------------------
             # 6) 定期保存模型
@@ -586,6 +695,13 @@ def main(json_path='SPECToptions/train_drunet_psnr_raw.json'):
     if opt['rank'] == 0:
         if 'pbar' in locals() and pbar.n < pbar.total: # Check if pbar was created and not already closed by break
             pbar.close()
+        
+        # 等待所有异步上传任务完成
+        if 'async_uploader' in locals():
+            logger.info("正在等待异步上传任务完成...")
+            async_uploader.stop_and_wait(timeout=60)
+            logger.info("异步上传任务已完成")
+        
         wandb.finish()
 
 if __name__ == '__main__':
