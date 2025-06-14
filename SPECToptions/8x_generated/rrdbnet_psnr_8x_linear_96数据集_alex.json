@@ -104,8 +104,8 @@
     "G_regularizer_clipstep": null,     // 权重裁剪步长，用于限制网络权重大小，防止梯度爆炸，null表示不使用
 
     "checkpoint_print": 10,             // 打印损失间隔
-    "checkpoint_test": 3000,             // 验证指标间隔
-    "checkpoint_save": 3000,            // 保存模型间隔
+    "checkpoint_test": 2000,             // 验证指标间隔
+    "checkpoint_save": 2000,            // 保存模型间隔
     "max_epoch": 10000,                    // 最大训练轮次 (epoch)
     "amp_enabled": true,
     "save_images": false               // 是否每次评估时都保存图像，true=每次保存，false=仅在最佳模型时保存
