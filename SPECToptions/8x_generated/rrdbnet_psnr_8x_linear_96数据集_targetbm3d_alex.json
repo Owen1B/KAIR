@@ -69,7 +69,7 @@
     "in_nc": 2,                         // 输入通道数
     "out_nc": 2,                        // 输出通道数
     "nf": 64,            // 96 for DPSR, 128 for SRMD, 64 for "dncnn"
-    "nb": 23,            // 12 for "srmd", 15 for "ffdnet", 20 for "dncnn", 16 for "srresnet" and "dpsr"
+    "nb": 20,            // 12 for "srmd", 15 for "ffdnet", 20 for "dncnn", 16 for "srresnet" and "dpsr"
     "gc": 32,            //
     "ng": 2,             // unused
     "reduction": 16,    // unused
